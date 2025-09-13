@@ -1,0 +1,12 @@
+mkdir _build
+mkdir _install
+
+git submodule init
+git submodule update
+
+cd _build
+cmake ..
+make edit_cache
+(enable fun utils, adjust the install prefix)
+make
+make install
