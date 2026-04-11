@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tox Bootstrap Daemon - Developer Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1 { color: #2c3e50; border-bottom: 3px solid #e74c3c; padding-bottom: 10px; }
+        h2 { color: #c0392b; margin-top: 35px; border-left: 4px solid #e74c3c; padding-left: 12px; }
+        h3 { color: #a93226; }
+        h4 { color: #922b21; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: 'Monaco', 'Menlo', monospace; font-size: 0.9em; }
+        pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 0.85em; }
+        .info { background: #d1ecf1; border: 1px solid #17a2b8; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .toc { background: #f8f9fa; padding: 20px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #dee2e6; }
+        .toc ul { margin: 0; padding-left: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.9em; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #e74c3c; color: white; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        .component-box { background: #fff; border: 1px solid #e74c3c; border-radius: 5px; padding: 15px; margin: 10px 0; }
+        .component-box h4 { margin-top: 0; color: #c0392b; }
+        hr { margin: 30px 0; border: none; border-top: 1px solid #dee2e6; }
+    </style>
+</head>
+<body>
+    <h1>Tox Bootstrap Daemon - Developer Documentation</h1>
+    
+    <div class="toc">
+        <strong>Table of Contents</strong>
+        <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#purpose">Purpose</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#components">Component Details</a></li>
+            <li><a href="#configuration">Configuration</a></li>
+            <li><a href="#installation">Installation</a></li>
+            <li><a href="#maintenance">Maintenance</a></li>
+            <li><a href="#protocol">Protocol Details</a></li>
+        </ul>
+    </div>
+
+    <h2 id="overview">Overview</h2>
+    
+    <p>
+        The <strong>Tox Bootstrap Daemon</strong> (tox-bootstrapd) is a server-side application that provides 
+        essential infrastructure for the Tox P2P network. It's built on top of libtoxcore and serves as a 
+        bootstrap node - the first point of contact for new Tox clients joining the network.
+    </p>
+    
+    <div class="info">
+        <strong>Project Location:</strong> <code>other/bootstrap_daemon/</code><br>
+        <strong>Main Source:</strong> <code>src/tox-bootstrapd.c</code>
+    </div>
+
+    <h2 id="purpose">Purpose</h2>
+    
+    <p>The daemon serves three critical functions in the Tox network:</p>
+    
+    <h3>1. DHT Bootstrap Node</h3>
+    <p>
+        New Tox clients need to connect to the distributed network. The daemon maintains a DHT node that:
+    </p>
+        <ul>
+            <li>Stores peer contact information for the network</li>
+            <li>Responds to "get nodes" requests from new clients</li>
+            <li>Bridges new clients to existing network nodes</li>
+        </ul>
+    
+    <h3>2. TCP Relay</h3>
+    <p>
+        For users behind restrictive firewalls (NAT, corporate networks), the daemon:
+    </p>
+        <ul>
+            <li>Acts as a TCP relay server</li>
+            <li>Forwards encrypted packets between peers</li>
+            <li>Enables connectivity when UDP is blocked</li>
+        </ul>
+    
+    <h3>3. Onion Announcements</h3>
+    <p>
+        The daemon maintains onion service announcements:
+    </p>
+        <ul>
+            <li>Stores peer public keys and their associated curve25519 public keys</li>
+            <li>Allows friends to discover each other's presence</li>
+            <li>Enables the onion routing system for anonymous communication</li>
+        </ul>
+
+    <h2 id="architecture">Architecture</h2>
+    
+    <h3>Code Structure</h3>
+    <pre>other/bootstrap_daemon/
+├── src/
+│   ├── tox-bootstrapd.c      # Main entry point & core logic
+│   ├── config.c              # Configuration parsing
+│   ├── command_line_arguments.c # CLI argument parsing
+│   ├── log.c                # Logging infrastructure
+│   ├── log.h
+│   ├── config.h
+│   ├── global.h              # Global definitions
+│   ├── config_defaults.h    # Default configuration
+│   └── log_backend_*.c      # Log backends (stdout, syslog)
+├── tox-bootstrapd.conf      # Sample configuration
+├── tox-bootstrapd.service   # systemd service file
+├── tox-bootstrapd.sh      # SysV init script
+└── docker/
+    └── Dockerfile          # Docker image
+</pre>
+    
+    <h3>Main Event Loop</h3>
+    <pre>int main(int argc, char *argv[])
+{
+    // 1. Parse command line arguments
+    // 2. Load configuration file
+    // 3. Initialize networking (IPv4/IPv6)
+    // 4. Create toxcore components
+    // 5. Main event loop:
+    while (running) {
+        mono_time_update(mono_time);
+        do_dht(dht);                    // DHT processing
+        do_gca(group_announce);        // Group announcements
+        do_tcp_server(tcp_server);    // TCP relay
+        networking_poll(net, NULL);   // Network I/O
+        sleep_milliseconds(30);
+    }
+}</pre>
+    
+    <h3>Component Initialization</h3>
+    <pre>// 1. Create networking core
+Networking_Core *net = new_networking_ex(
+    logger, mem, ns, &ip, start_port, end_port, NULL);
+
+// 2. Create DHT
+DHT *dht = new_dht(
+    logger, mem, rng, ns, mono_time, net, true, enable_lan_discovery);
+
+// 3. Create forwarding
+Forwarding *forwarding = new_forwarding(
+    logger, mem, rng, mono_time, dht);
+
+// 4. Create announcements
+Announcements *announce = new_announcements(
+    logger, mem, rng, mono_time, forwarding);
+
+// 5. Create group announces
+GC_Announces_List *group_announce = new_gca_list(mem);
+
+// 6. Create onion
+Onion *onion = new_onion(
+    logger, mem, mono_time, rng, dht);
+
+// 7. Create onion announce
+Onion_Announce *onion_a = new_onion_announce(
+    logger, mem, rng, mono_time, dht);
+
+// 8. Create TCP server (optional)
+TCP_Server *tcp_server = new_tcp_server(
+    logger, mem, rng, ns, enable_ipv6,
+    tcp_relay_port_count, tcp_relay_ports,
+    dht_get_self_secret_key(dht), onion, forwarding);</pre>
+
+    <h2 id="components">Component Details</h2>
+    
+    <div class="component-box">
+        <h4>DHT (Distributed Hash Table)</h4>
+        <p>
+            The core component implementing Kademlia-like peer discovery. Located at <code>toxcore/DHT.h</code>.
+        </p>
+        <ul>
+            <li><strong>Ping interval:</strong> 60 seconds</li>
+            <li><strong>Timeout:</strong> 5 seconds</li>
+            <li><strong>Max nodes:</strong> 8 close to bootstrap</li>
+            <li><strong>Fake friends:</strong> 2 (for onion path diversity)</li>
+        </ul>
+    </div>
+    
+    <div class="component-box">
+        <h4>Forwarding</h4>
+        <p>
+            Handles packet forwarding between peers in the network.
+        </p>
+    </div>
+    
+    <div class="component-box">
+        <h4>Announcements</h4>
+        <p>
+            DHT announcements for peer status - stores public keys and associated data.
+        </p>
+    </div>
+    
+    <div class="component-box">
+        <h4>Onion / Onion_Announce</h4>
+        <p>
+            Implements the onion routing system for anonymous communication paths.
+        </p>
+        <ul>
+            <li><strong>Path length:</strong> 3 hops</li>
+            <li><strong>Packet size:</strong> Max 1400 bytes</li>
+        </ul>
+    </div>
+    
+    <div class="component-box">
+        <h4>Group Announcements</h4>
+        <p>
+            Similar to DHT announcements but for group chat discovery.
+        </p>
+    </div>
+    
+    <div class="component-box">
+        <h4>TCP Server</h4>
+        <p>
+            TCP relay server for users behind firewalls.
+        </p>
+        <ul>
+            <li><strong>Default ports:</strong> 443, 3389</li>
+            <li><strong>File descriptor limit:</strong> 32768 recommended</li>
+        </ul>
+    </div>
+
+    <h2 id="configuration">Configuration</h2>
+    
+    <h3>Configuration File Format</h3>
+    <p>The daemon uses libconfig format:</p>
+    <pre>// /etc/tox-bootstrapd.conf
+
+pid_file_path = "/var/lib/tox-bootstrapd/tox-bootstrapd.pid";
+keys_file_path = "/var/lib/tox-bootstrapd/keys";
+start_port = 33445;
+
+enable_ipv6 = true;
+enable_ipv4_fallback = true;
+enable_lan_discovery = false;
+enable_tcp_relay = true;
+enable_motd = false;
+
+tcp_relay_ports = [ 443, 3389 ];
+
+bootstrap_nodes = {
+    {
+        address = "127.0.0.1";
+        port = 33445;
+        public_key = "...";
+    },
+};</pre>
+    
+    <h3>Key Configuration Options</h3>
+    <table>
+        <tr><th>Option</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>pid_file_path</code></td><td>string</td><td>/var/lib/...</td><td>PID file location</td></tr>
+        <tr><td><code>keys_file_path</code></td><td>string</td><td>/var/lib/...</td><td>Keys file location</td></tr>
+        <tr><td><code>start_port</code></td><td>int</td><td>33445</td><td>UDP port range start</td></tr>
+        <tr><td><code>enable_ipv6</code></td><td>bool</td><td>true</td><td>Enable IPv6 networking</td></tr>
+        <tr><td><code>enable_tcp_relay</code></td><td>bool</td><td>true</td><td>Enable TCP relay</td></tr>
+        <tr><td><code>tcp_relay_ports</code></td><td>array</td><td>[443, 3389]</td><td>TCP relay ports</td></tr>
+        <tr><td><code>enable_lan_discovery</code></td><td>bool</td><td>false</td><td>Enable LAN discovery</td></tr>
+        <tr><td><code>bootstrap_nodes</code></td><td>array</td><td>[]</td><td>Nodes to bootstrap from</td></tr>
+    </table>
+    
+    <h3>Command Line Options</h3>
+    <table>
+        <tr><th>Option</th><th>Description</th></tr>
+        <tr><td><code>-h, --help</code></td><td>Show help</td></tr>
+        <tr><td><code>-v, --version</code></td><td>Show version</td></tr>
+        <tr><td><code>-d, --daemon</code></td><td>Run as daemon</td></tr>
+        <tr><td><code>-p, --config PATH</code></td><td>Config file path</td></tr>
+        <tr><td><code>-n, --node</code></td><td>Run in foreground</td></tr>
+    </table>
+
+    <h2 id="installation">Installation</h2>
+    
+    <h3>Systemd (Recommended)</h3>
+    <pre># 1. Create dedicated user (security)
+sudo useradd --home-dir /var/lib/tox-bootstrapd --create-home \
+  --system --shell /sbin/nologin \
+  --comment "Tox DHT bootstrap daemon" \
+  --user-group tox-bootstrapd
+
+# 2. Restrict home directory
+sudo chmod 700 /var/lib/tox-bootstrapd
+
+# 3. Copy config
+sudo cp tox-bootstrapd.conf /etc/tox-bootstrapd.conf
+
+# 4. Copy service file
+sudo cp tox-bootstrapd.service /etc/systemd/system/
+
+# 5. Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable tox-bootstrapd.service
+sudo systemctl start tox-bootstrapd.service
+
+# 6. Check status
+sudo systemctl status tox-bootstrapd.service</pre>
+    
+    <h3>Docker</h3>
+    <pre># Pull official image
+docker pull toxchat/bootstrap-node:latest
+
+# Run with port mapping
+docker run -d --name tox-bootstrapd --restart always \
+  --user "$(id -u tox-bootstrapd):$(id -g tox-bootstrapd)" \
+  -v /var/lib/tox-bootstrapd/:/var/lib/tox-bootstrapd/ \
+  --ulimit nofile=32768:32768 \
+  -p 443:443 \
+  -p 3389:3389 \
+  -p 33445:33445 \
+  -p 33445:33445/udp \
+  toxchat/bootstrap-node
+
+# Check logs
+docker logs tox-bootstrapd</pre>
+
+    <h2 id="maintenance">Maintenance</h2>
+    
+    <div class="warning">
+        <strong>Update Monthly!</strong> The DHT protocol may change between toxcore versions. 
+        Using an outdated daemon can cause connectivity issues for the entire network.
+    </div>
+    
+    <h3>Status Check</h3>
+    <pre>systemctl status tox-bootstrapd.service
+journalctl -f -u tox-bootstrapd.service</pre>
+    
+    <h3>Retrieving Public Key</h3>
+    <pre># From logs
+sudo grep "Public Key:" /var/log/syslog
+
+# Or read from keys file
+sudo cat /var/lib/tox-bootstrapd/keys | xxd | head -2</pre>
+
+    <h2 id="protocol">Protocol Details</h2>
+    
+    <h3>DHT Protocol</h3>
+    <p>The daemon implements these DHT packet types (from DHT.h):</p>
+    <table>
+        <tr><th>Packet ID</th><th>Description</th></tr>
+        <tr><td><code>CRYPTO_PACKET_FRIEND_REQ</code> = 32</td><td>Friend request</td></tr>
+        <tr><td><code>CRYPTO_PACKET_DHTPK</code> = 156</td><td>DHT public key</td></tr>
+        <tr><td><code>CRYPTO_PACKET_NAT_PING</code> = 254</td><td>NAT ping</td></tr>
+    </table>
+    
+    <h3>Default Ports</h3>
+    <ul>
+        <li><strong>UDP 33445</strong> - DHT communication</li>
+        <li><strong>TCP 443</strong> - TCP relay (HTTPS)</li>
+        <li><strong>TCP 3389</strong> - TCP relay</li>
+    </ul>
+
+    <hr>
+    <p>
+        <small>
+            Generated from c-toxcore source. Official site: <a href="https://tox.chat">tox.chat</a>
+        </small>
+    </p>
+</body>
+</html>

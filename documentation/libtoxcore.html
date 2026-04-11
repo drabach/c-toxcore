@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>libtoxcore - Developer Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #2980b9; margin-top: 35px; border-left: 4px solid #3498db; padding-left: 12px; }
+        h3 { color: #1a5276; }
+        h4 { color: #1a5276; margin-top: 25px; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: 'Monaco', 'Menlo', monospace; font-size: 0.9em; }
+        pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 0.85em; }
+        .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .note { background: #e8f4f8; border: 1px solid #3498db; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .toc { background: #f8f9fa; padding: 20px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #dee2e6; }
+        .toc ul { margin: 0; padding-left: 20px; }
+        .module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; margin: 15px 0; }
+        .module-card { background: #fff; border: 1px solid #ddd; border-radius: 5px; padding: 15px; }
+        .module-card h4 { margin-top: 0; color: #2c3e50; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.9em; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #3498db; color: white; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        .api-signature { background: #f8f9fa; padding: 8px 12px; border-radius: 3px; font-family: monospace; font-size: 0.85em; margin: 5px 0; }
+        hr { margin: 30px 0; border: none; border-top: 1px solid #dee2e6; }
+    </style>
+</head>
+<body>
+    <h1>libtoxcore - Developer Documentation</h1>
+    
+    <div class="toc">
+        <strong>Table of Contents</strong>
+        <ul>
+            <li><a href="#introduction">Introduction</a></li>
+            <li><a href="#architecture">Architecture & Design</a></li>
+            <li><a href="#modules">Library Modules</a></li>
+            <li><a href="#public-api">Public API Reference</a></li>
+            <li><a href="#events">Events System</a></li>
+            <li><a href="#memory">Memory & State Management</a></li>
+            <li><a href="#networking">Networking Layer</a></li>
+            <li><a href="#crypto">Cryptography</a></li>
+            <li><a href="#extension">Extending toxcore</a></li>
+            <li><a href="#submodules">Related Submodules</a></li>
+        </ul>
+    </div>
+
+    <h2 id="introduction">Introduction</h2>
+    
+    <p>
+        <strong>libtoxcore</strong> is the core C library implementing the Tox protocol - a peer-to-peer (P2P) secure messenger. 
+        The library provides a complete messaging stack including friend management, encrypted communications, 
+        file transfers, group chats, and audio/video calls.
+    </p>
+    
+    <div class="warning">
+        <strong>Cryptographic Warning:</strong> This is an experimental cryptographic library. It has NOT been audited by 
+        independent cryptography experts. Use at your own risk. The security model is still being documented 
+        (see <a href="https://github.com/TokTok/c-toxcore/issues/210">GitHub issue #210</a>).
+    </div>
+
+    <h2 id="architecture">Architecture & Design Decisions</h2>
+    
+    <h3>Design Principles</h3>
+    <ol>
+        <li><strong>No Central Servers</strong> - Pure P2P architecture using DHT for peer discovery</li>
+        <li><strong>End-to-End Encryption</strong> - All communications encrypted with NaCl/libsodium</li>
+        <li><strong>Minimal Dependencies</strong> - Only libsodium required; libvpx/opus optional</li>
+        <li><strong>Event-Driven</strong> - Callback-based event system for asynchronous events</li>
+        <li><strong>Single-Thread Friendly</strong> - Can run in single or multi-threaded mode</li>
+    </ol>
+    
+    <h3>Layered Architecture</h3>
+    <pre>┌─────────────────────────────────────────────┐
+│           Application Layer                    │
+│         (toxcore public API)                  │
+├─────────────────────────────────────────────┤
+│           Core Modules                       │
+│  ┌─────────┐ ┌──────────┐ ┌─────────────┐ │
+│  │Messenger │ │ Group     │ │   Onion     │ │
+│  │(chat)    │ │ (conferen │ │ (routing)   │ │
+│  └─────────┘ └──────────┘ └─────────────┘ │
+├─────────────────────────────────────────────┤
+│           Network Layer                      │
+│  ┌─────────┐ ┌──────────┐ ┌─────────────┐ │
+│  │  DHT     │ │TCP_server│ │  Network   │ │
+│  └─────────┘ └──────────┘ └─────────────┘ │
+├─────────────────────────────────────────────┤
+│           Foundation Layer                    │
+│  ┌─────────┐ ┌──────────┐ ┌─────────────┐ │
+│  │Crypto   │ │  Logger  │ │  Mono_time  │ │
+│  │_core    │ │          │ │             │ │
+│  └─────────┘ └──────────┘ └─────────────┘ │
+└─────────────────────────────────────────────┘</pre>
+
+    <h2 id="modules">Library Modules</h2>
+    
+    <p>The library is organized into modular components. Here's a comprehensive breakdown:</p>
+    
+    <div class="module-grid">
+        <div class="module-card">
+            <h4>toxcore/ - Core API</h4>
+            <p><strong>Main public interface</strong></p>
+            <ul>
+                <li><code>tox.h</code> - Main API</li>
+                <li><code>tox_events.h</code> - Event system</li>
+                <li><code>tox_options.h</code> - Configuration</li>
+                <li><code>tox_dispatch.h</code> - Event dispatch</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxcore/ - Messenger</h4>
+            <p><strong>Chat & friend management</strong></p>
+            <ul>
+                <li><code>Messenger.h</code> - Friend messaging</li>
+                <li><code>friend_connection.h</code> - Connection handling</li>
+                <li><code>friend_requests.h</code> - Friend requests</li>
+                <li><code>net_crypto.h</code> - Network crypto</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxcore/ - Networking</h4>
+            <p><strong>P2P networking stack</strong></p>
+            <ul>
+                <li><code>DHT.h</code> - Distributed hash table</li>
+                <li><code>network.h</code> - Socket handling</li>
+                <li><code>TCP_server.h</code> - TCP relay</li>
+                <li><code>TCP_client.h</code> - TCP client</li>
+                <li><code>TCP_connection.h</code> - TCP connections</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxcore/ - Group Chats</h4>
+            <p><strong>Conference support</strong></p>
+            <ul>
+                <li><code>group_chats.h</code> - Group implementation</li>
+                <li><code>group_connection.h</code> - Group connections</li>
+                <li><code>group_announce.h</code> - Group discovery</li>
+                <li><code>group_moderation.h</code> - Moderation</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxcore/ - Onion</h4>
+            <p><strong>Anonymous routing</strong></p>
+            <ul>
+                <li><code>onion.h</code> - Onion router</li>
+                <li><code>onion_client.h</code> - Onion client</li>
+                <li><code>onion_announce.h</code> - Announcements</li>
+                <li><code>forwarding.h</code> - Packet forwarding</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxcore/ - Foundation</h4>
+            <p><strong>Core utilities</strong></p>
+            <ul>
+                <li><code>crypto_core.h</code> - Cryptography</li>
+                <li><code>logger.h</code> - Logging</li>
+                <li><code>mono_time.h</code> - Time handling</li>
+                <li><code>mem.h</code> - Memory ops</li>
+                <li><code>network.h</code> - Networking</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxencryptsave/</h4>
+            <p><strong>Save file encryption</strong></p>
+            <ul>
+                <li><code>toxencryptsave.h</code> - Encrypted storage</li>
+            </ul>
+        </div>
+        
+        <div class="module-card">
+            <h4>toxav/</h4>
+            <p><strong>Audio/Video</strong></p>
+            <ul>
+                <li><code>toxav.h</code> - A/V API</li>
+                <li><code>rtp.h</code> - RTP protocol</li>
+                <li><code>groupav.h</code> - Group A/V</li>
+            </ul>
+        </div>
+    </div>
+
+    <h2 id="public-api">Public API Reference</h2>
+    
+    <h3>Instance Lifecycle</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_new()</code></td>
+            <td>Create a new Tox instance</td>
+        </tr>
+        <tr>
+            <td><code>tox_kill()</code></td>
+            <td>Destroy a Tox instance</td>
+        </tr>
+        <tr>
+            <td><code>tox_iterate()</code></td>
+            <td>Main event loop (call in timer)</td>
+        </tr>
+        <tr>
+            <td><code>tox_iteration_interval()</code></td>
+            <td>Get recommended interval (ms)</td>
+        </tr>
+        <tr>
+            <td><code>tox_get_savedata()</code></td>
+            <td>Get serialized state</td>
+        </tr>
+    </table>
+
+    <h3>Identity Management</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_self_get_address()</code></td>
+            <td>Get Tox address (38 bytes)</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_get_public_key()</code></td>
+            <td>Get public key (32 bytes)</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_get_secret_key()</code></td>
+            <td>Get secret key (32 bytes)</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_set_nospam()</code></td>
+            <td>Set nospam (friendship token)</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_set_name()</code></td>
+            <td>Set display name</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_set_status_message()</code></td>
+            <td>Set status message</td>
+        </tr>
+    </table>
+
+    <h3>Network Bootstrap</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_bootstrap()</code></td>
+            <td>Connect to DHT bootstrap node</td>
+        </tr>
+        <tr>
+            <td><code>tox_add_tcp_relay()</code></td>
+            <td>Add TCP relay</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_get_connection_status()</code></td>
+            <td>Get connection state</td>
+        </tr>
+    </table>
+
+    <h3>Friend Management</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_friend_add()</code></td>
+            <td>Send friend request</td>
+        </tr>
+        <tr>
+            <td><code>tox_friend_add_norequest()</code></td>
+            <td>Accept friend request</td>
+        </tr>
+        <tr>
+            <td><code>tox_friend_delete()</code></td>
+            <td>Remove friend</td>
+        </tr>
+        <tr>
+            <td><code>tox_friend_by_public_key()</code></td>
+            <td>Find friend by key</td>
+        </tr>
+        <tr>
+            <td><code>tox_friend_get()</code></td>
+            <td>Get friend info</td>
+        </tr>
+    </table>
+
+    <h3>Messaging</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_friend_send_message()</code></td>
+            <td>Send message</td>
+        </tr>
+        <tr>
+            <td><code>tox_self_set_typing()</code></td>
+            <td>Send typing indicator</td>
+        </tr>
+    </table>
+
+    <h3>File Transfer</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_file_send()</code></td>
+            <td>Initiate file transfer</td>
+        </tr>
+        <tr>
+            <td><code>tox_file_send_chunk()</code></td>
+            <td>Send file data chunk</td>
+        </tr>
+        <tr>
+            <td><code>tox_file_accept()</code></td>
+            <td>Accept incoming file</td>
+        </tr>
+        <tr>
+            <td><code>tox_file_control()</code></td>
+            <td>Control transfer (pause/resume)</td>
+        </tr>
+    </table>
+
+    <h3>Group Chats (Conferences)</h3>
+    <table>
+        <tr><th>Function</th><th>Description</th></tr>
+        <tr>
+            <td><code>tox_conference_new()</code></td>
+            <td>Create group</td>
+        </tr>
+        <tr>
+            <td><code>tox_conference_join()</code></td>
+            <td>Join group</td>
+        </tr>
+        <tr>
+            <td><code>tox_conference_send_message()</code></td>
+            <td>Send group message</td>
+        </tr>
+        <tr>
+            <td><code>tox_conference_invite()</code></td>
+            <td>Invite friend to group</td>
+        </tr>
+    </table>
+
+    <h2 id="events">Events System</h2>
+    
+    <p>Toxcore uses a callback-based event system. Register callbacks to handle events:</p>
+    
+    <h4>Callback Registration Pattern</h4>
+    <div class="api-signature">void tox_callback_{event}(Tox *tox, tox_{event}_cb *callback);</div>
+    
+    <h4>Available Event Callbacks</h4>
+    <table>
+        <tr><th>Event</th><th>Description</th><th>Callback Signature</th></tr>
+        <tr>
+            <td><code>friend_request</code></td>
+            <td>Received friend request</td>
+            <td><code>void(Tox*, uint8_t* pk, const uint8_t*, size_t, void*)</code></td>
+        </tr>
+        <tr>
+            <td><code>friend_message</code></td>
+            <td>Received message</td>
+            <td><code>void(Tox*, uint32_t, TOX_MESSAGE_TYPE, const uint8_t*, size_t, void*)</code></td>
+        </tr>
+        <tr>
+            <td><code>friend_connection_status</code></td>
+            <td>Friend came online/went offline</td>
+            <td><code>void(Tox*, uint32_t, Tox_Connection, void*)</code></td>
+        </tr>
+        <tr>
+            <td><code>self_connection_status</code></td>
+            <td>Our DHT connection changed</td>
+            <td><code>void(Tox*, Tox_Connection, void*)</code></td>
+        </tr>
+        <tr>
+            <td><code>file_receive</code></td>
+            <td>Incoming file transfer</td>
+            <td><code>void(Tox*, uint32_t, uint32_t, uint32_t, uint64_t, const uint8_t*, size_t, void*)</code></td>
+        </tr>
+        <tr>
+            <td><code>file_chunk_request</code></td>
+            <td>Request for file data</td>
+            <td><code>void(Tox*, uint32_t, uint32_t, uint64_t, size_t, void*)</code></td>
+        </tr>
+    </table>
+    
+    <h4>Example: Setting up callbacks</h4>
+    <pre>// In main.c
+static void handle_friend_request(
+    Tox *tox,
+    const uint8_t *public_key,
+    const uint8_t *message, size_t length,
+    void *user_data) {
+    // Accept friend automatically
+    TOX_ERR_FRIEND_ADD err;
+    tox_friend_add_norequest(tox, public_key, &err);
+}
+
+static void handle_friend_message(
+    Tox *tox,
+    Tox_Friend_Number friend_number,
+    Tox_Message_Type type,
+    const uint8_t *message, size_t length,
+    void *user_data) {
+    // Echo back
+    tox_friend_send_message(tox, friend_number, type, message, length, NULL);
+}
+
+int main(void) {
+    Tox *tox = tox_new(NULL, NULL);
+    
+    tox_callback_friend_request(tox, handle_friend_request);
+    tox_callback_friend_message(tox, handle_friend_message);
+    
+    while (running) {
+        usleep(1000 * tox_iteration_interval(tox));
+        tox_iterate(tox, NULL);
+    }
+}</pre>
+
+    <h2 id="memory">Memory & State Management</h2>
+    
+    <h3>Tox_Options</h3>
+    <p>Configure instance behavior via Tox_Options:</p>
+    <pre>Tox_Options *options = tox_options_new(NULL);
+options->udp_enabled = true;          // Use UDP (default: true)
+options->ipv6_enabled = true;       // Use IPv6 (default: true)
+options->proxy_type = TOX_PROXY_TYPE_NONE;
+options->start_port = 33445;        // UDP port range start
+options->end_port = 33445;         // UDP port range end
+options->tcp_server_port = 3389;   // TCP relay port
+
+Tox *tox = tox_new(options, &error);
+tox_options_free(options);</pre>
+    
+    <h3>Saving/Loading State</h3>
+    <pre>// Save state
+size_t size = tox_get_savedata_size(tox);
+uint8_t *data = malloc(size);
+tox_get_savedata(tox, data);
+// Store data to file/database
+
+// Load state
+Tox_Options *options = tox_options_new(NULL);
+options->savedata = data;
+options->savedata_length = size;
+Tox *tox = tox_new(options, &error);</pre>
+
+    <h2 id="networking">Networking Layer</h2>
+    
+    <h3>DHT (Distributed Hash Table)</h3>
+    <p>The DHT provides serverless peer discovery using a Kademlia-like protocol:</p>
+    <ul>
+        <li><strong>Nodes</strong> - Store peer contact info (IP, port, public key)</li>
+        <li><strong>Ping</strong> - Keep-alive messages every 60 seconds</li>
+        <li><strong>Bootstrap</strong> - Connect to known seed nodes</li>
+    </ul>
+    <pre>// Bootstrap to network
+tox_bootstrap(tox, "127.0.0.1", 33445, 
+    (uint8_t[]){...}, NULL);
+
+// Add TCP relay for firewall traversal
+tox_add_tcp_relay(tox, "relay.tox.chat", 443, 
+    (uint8_t[]){...}, NULL);</pre>
+    
+    <h3>UDP vs TCP</h3>
+    <ul>
+        <li><strong>UDP</strong> - Direct peer-to-peer, lower latency</li>
+        <li><strong>TCP</strong> - Via relays, works through firewalls</li>
+    </ul>
+
+    <h2 id="crypto">Cryptography</h2>
+    
+    <h3>Key Sizes (from crypto_core.h)</h3>
+    <table>
+        <tr><th>Constant</th><th>Value</th><th>Usage</th></tr>
+        <tr><td><code>CRYPTO_PUBLIC_KEY_SIZE</code></td><td>32 bytes</td><td>Public key</td></tr>
+        <tr><td><code>CRYPTO_SECRET_KEY_SIZE</code></td><td>32 bytes</td><td>Secret key</td></tr>
+        <tr><td><code>CRYPTO_SHARED_KEY_SIZE</code></td><td>32 bytes</td><td>Shared secret</td></tr>
+        <tr><td><code>CRYPTO_NONCE_SIZE</code></td><td>24 bytes</td><td>Nonce</td></tr>
+        <tr><td><code>CRYPTO_MAC_SIZE</code></td><td>16 bytes</td><td>Message auth</td></tr>
+    </table>
+    
+    <h3>Tox Address Format</h3>
+    <pre>┌──────────────────┬─────────┬──────────┐
+│ Public Key (32B) │ nospam  │ checksum│
+│                  │ (4B)   │  (2B)   │
+└──────────────────┴─────────┴──────────┘
+Total: 38 bytes</pre>
+    <p>Checksum is XOR of even/odd bytes of public key + nospam</p>
+
+    <h2 id="extension">Extending toxcore</h2>
+    
+    <h3>Adding New Events</h3>
+    <p>The events system can be extended to add custom events:</p>
+    <pre>// 1. Define event type in tox_events.h
+typedef struct Tox_Event_Custom Tox_Event_Custom;
+
+// 2. Add event functions
+Tox_Event_Custom *tox_event_custom_new(void);
+void tox_event_custom_free(Tox_Event_Custom *);
+
+// 3. Register callback type
+typedef void tox_custom_cb(Tox *tox, const Tox_Event_Custom *, void *);
+void tox_callback_custom(Tox *tox, tox_custom_cb *callback);</pre>
+    
+    <h3>Messenger Plugins</h3>
+    <p>Extend Messenger to save custom state across sessions:</p>
+    <pre>// Define plugin
+static uint32_t my_state_size(const Messenger *m) {
+    return sizeof(MyState);
+}
+
+static uint8_t *my_state_save(const Messenger *m, uint8_t *data) {
+    MyState *s = (MyState *)data;
+    s->value = m->my_value;
+    return data + sizeof(MyState);
+}
+
+static State_Load_Status my_state_load(
+    Messenger *m, const uint8_t *data, uint32_t length) {
+    memcpy(&m->my_value, data, sizeof(MyState));
+    return STATE_LOAD_STATUS_OK;
+}
+
+// Register
+Messenger_State_Plugin plugin = {
+    .type = STATE_TYPE_CUSTOM,
+    .size = my_state_size,
+    .save = my_state_save,
+    .load = my_state_load
+};
+messenger_register_state_plugin(messenger, &plugin);</pre>
+
+    <h2 id="submodules">Related Submodules</h2>
+    
+    <h3>toxencryptsave</h3>
+    <p>Encrypt saved data with a password:</p>
+    <pre>#include "toxencryptsave/toxencryptsave.h"
+
+// Derive key from password
+Tox_Pass_Key *key = tox_pass_key_derive_from_password("password", NULL);
+
+// Encrypt
+uint8_t *encrypted = malloc(size);
+tox_encrypt(tox_get_savedata(tox, NULL), size, key, encrypted, NULL);
+
+// Decrypt
+uint8_t *decrypted = tox_decrypt(encrypted, size, key, NULL);</pre>
+    
+    <h3>toxav (Audio/Video)</h3>
+    <p>Optional module for real-time communication (requires libvpx and opus):</p>
+    <pre>#include "toxav/toxav.h"
+
+ToxAV *av = toxav_new(tox, NULL);
+
+// Call friend
+toxav_call(av, friend_number, audio_bitrate, video_bitrate, NULL);
+
+// Handle callback
+toxav_callback_call(av, on_call, NULL);
+
+// Main loop
+while (running) {
+    tox_iterate(tox, NULL);
+    toxav_iterate(av);
+}</pre>
+
+    <hr>
+    <p>
+        <small>
+            This documentation is auto-generated from the c-toxcore source. 
+            For the full API reference, see <code>toxcore/tox.h</code>.
+            Official site: <a href="https://tox.chat">tox.chat</a>
+        </small>
+    </p>
+</body>
+</html>

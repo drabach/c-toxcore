@@ -24,5 +24,6 @@
 #define DEFAULT_TCP_RELAY_PORTS       443, 3389, 33445 // comma-separated list of ports
 #define DEFAULT_ENABLE_MOTD           true
 #define DEFAULT_MOTD                  DAEMON_NAME
+#define DEFAULT_BIND_LOCALHOST       false
 
 #endif // C_TOXCORE_OTHER_BOOTSTRAP_DAEMON_SRC_CONFIG_DEFAULTS_H

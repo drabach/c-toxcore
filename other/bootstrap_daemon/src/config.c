@@ -151,7 +151,8 @@ static int tox_config_lookup_bool(const config_t *config, const char *path, bool
 
 bool get_general_config(const char *cfg_file_path, char **pid_file_path, char **keys_file_path, int *port,
                         bool *enable_ipv6, bool *enable_ipv4_fallback, bool *enable_lan_discovery, bool *enable_tcp_relay,
-                        uint16_t **tcp_relay_ports, int *tcp_relay_port_count, bool *enable_motd, char **motd)
+                        uint16_t **tcp_relay_ports, int *tcp_relay_port_count, bool *enable_motd, char **motd,
+                        bool *bind_localhost)
 {
     config_t cfg;
 
@@ -164,6 +165,7 @@ bool get_general_config(const char *cfg_file_path, char **pid_file_path, char **
     const char *const NAME_ENABLE_TCP_RELAY     = "enable_tcp_relay";
     const char *const NAME_ENABLE_MOTD          = "enable_motd";
     const char *const NAME_MOTD                 = "motd";
+    const char *const NAME_BIND_LOCALHOST      = "bind_localhost";
 
     config_init(&cfg);
 
@@ -278,6 +280,14 @@ bool get_general_config(const char *cfg_file_path, char **pid_file_path, char **
         snprintf(*motd, motd_length, "%s", tmp_motd);
     }
 
+    // Get bind_localhost option
+    if (tox_config_lookup_bool(&cfg, NAME_BIND_LOCALHOST, bind_localhost) == CONFIG_FALSE) {
+        log_write(LOG_LEVEL_WARNING, "No '%s' setting in configuration file.\n", NAME_BIND_LOCALHOST);
+        log_write(LOG_LEVEL_WARNING, "Using default '%s': %s\n", NAME_BIND_LOCALHOST,
+                  DEFAULT_BIND_LOCALHOST ? "true" : "false");
+        *bind_localhost = DEFAULT_BIND_LOCALHOST;
+    }
+
     config_destroy(&cfg);
 
     log_write(LOG_LEVEL_INFO, "Successfully read:\n");
@@ -308,6 +318,8 @@ bool get_general_config(const char *cfg_file_path, char **pid_file_path, char **
     if (*enable_motd) {
         log_write(LOG_LEVEL_INFO, "'%s': %s\n", NAME_MOTD, *motd);
     }
+
+    log_write(LOG_LEVEL_INFO, "'%s': %s\n", NAME_BIND_LOCALHOST,      *bind_localhost      ? "true" : "false");
 
     return true;
 }

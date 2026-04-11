@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tox over Tor - Complete Integration Guide</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 950px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #000;
+        }
+        h1 { color: #6f42c1; border-bottom: 3px solid #6f42c1; padding-bottom: 10px; }
+        h2 { color: #5f42a1; margin-top: 35px; border-left: 4px solid #6f42c1; padding-left: 12px; }
+        h3 { color: #4f3291; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: 'Monaco', 'Menlo', monospace; color: #000; }
+        pre { background: #1e1e1e; color: #fff; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin: 15px 0; color: #000; }
+        .warning strong { color: #000; }
+        .note { background: #e8f4f8; border: 1px solid #17a2b8; padding: 15px; border-radius: 5px; margin: 15px 0; color: #000; }
+        .note strong { color: #000; }
+        .success { background: #d4edda; border: 1px solid #28a745; padding: 15px; border-radius: 5px; margin: 15px 0; color: #000; }
+        .success strong { color: #000; }
+        .toc { background: #f8f9fa; padding: 20px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #dee2e6; color: #000; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #6f42c1; color: white; }
+        .step { background: #fff; border-left: 4px solid #28a745; padding: 15px; margin: 15px 0; }
+        hr { margin: 30px 0; border: none; border-top: 1px solid #dee2e6; }
+    </style>
+</head>
+<body>
+    <h1>Tox over Tor - Complete Integration Guide</h1>
+    
+    <div class="toc">
+        <strong>Table of Contents</strong>
+        <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#daemon-setup">Bootstrap Daemon Setup</a></li>
+            <li><a href="#socat-bridges">Socat Bridges</a></li>
+            <li><a href="#tor-hidden-service">Tor Hidden Service</a></li>
+            <li><a href="#client-setup">Client Setup</a></li>
+            <li><a href="#onion-address">Getting .onion Address</a></li>
+            <li><a href="#complete-startup">Complete Startup Script</a></li>
+            <li><a href="#notes">Important Notes</a></li>
+        </ul>
+    </div>
+
+    <h2 id="overview">Overview</h2>
+    
+    <p>
+        This guide explains how to run Tox bootstrap daemons and clients completely over Tor. 
+        All traffic flows through the Tor network - no direct internet connections.
+    </p>
+    
+    <div class="success">
+        <strong>What we achieve:</strong>
+        <ul>
+            <li>Hide bootstrap node IP addresses</li>
+            <li>Enable clients behind restrictive firewalls</li>
+            <li>All communication via Tor/TCP (no direct UDP exposure)</li>
+            <li>Complete anonymity for network participants</li>
+        </ul>
+    </div>
+
+    <h2 id="architecture">Architecture</h2>
+    
+    <pre>┌─────────────────────────────────────────────────────────────────────────────┐
+│                        TOX CLIENTS (TCP-only + torsocks)                       │
+│                    torsocks → Tor → .onion addresses only                     │
+└──────────────────────────────┬──────────────────────────────────────────────────────┘
+                               │ TCP
+┌───────────────────────────────▼──────────────────────────────────────────────┐
+│                      Tor Hidden Service                      │
+│                                                       │
+│   yournode.onion:33445 (DHT)                              │
+└──────────────────────────────┬──────────────────────────────────────┘
+                                 │ TCP
+┌───────────────────────────────▼──────────────────────────────────┐
+│                    socat Bridge (DHT only)                │
+│                                                       │
+│   TCP:33445 ←→ UDP:33445  (DHT)                          │
+└──────────────────────────────┬──────────────────────────────────────┘
+                                │ UDP
+┌───────────────────────────────▼──────────────────────────────┐
+│                   tox-bootstrapd                      │
+│                                                       │
+│   - DHT (peer discovery) - UDP internally            │
+│   - TCP relay (peer communication) - UDP internally │
+└─────────────────────────────────────────────────────┘</pre>
+
+    <h2 id="daemon-setup">Bootstrap Daemon Setup</h2>
+    
+    <h3>Install Dependencies</h3>
+    <pre>sudo apt update
+sudo apt install socat tor</pre>
+
+    <h3>Configure Bootstrap Daemon</h3>
+    <p>Edit <code>/etc/tox-bootstrapd.conf</code>:</p>
+    <pre>pid_file_path = "/var/lib/tox-bootstrapd/tox-bootstrapd.pid";
+keys_file_path = "/var/lib/tox-bootstrapd/keys";
+start_port = 33445;
+
+enable_ipv6 = true;
+enable_ipv4_fallback = true;
+enable_lan_discovery = false;
+enable_tcp_relay = true;
+enable_motd = false;
+
+tcp_relay_ports = [ 4444 ];  // Single port on localhost; Tor maps 443 -> 4444
+
+// IMPORTANT: Bind to localhost only (for Tor setup)
+bind_localhost = true;
+
+// ================================================================================
+// BOOTSTRAP NODES: READ AT RUNTIME FROM THIS CONFIG FILE
+// ================================================================================
+// The daemon reads bootstrap_nodes from this config file when it starts.
+// - With nodes: Daemon connects to the DHT network via these peers
+// - Without nodes: Daemon starts but remains isolated
+//
+// Replace the example below with your own Tor-based nodes' .onion addresses and public keys.
+// Each node entry requires: address (hostname), port, and public_key (32 bytes hex)
+//
+bootstrap_nodes = (
+    // Add your Tor-based bootstrap peers here:
+    {
+        address = "yourfriend1.onion",
+        port = 33445,
+        public_key = "YOUR_FRIEND1_PUBLIC_KEY..."
+    },
+    {
+        address = "yourfriend2.onion",
+        port = 33445,
+        public_key = "YOUR_FRIEND2_PUBLIC_KEY..."
+    }
+);
+// ================================================================================
+
+    <div class="warning">
+        <strong>Important:</strong> enable_tcp_relay = true is required for TCP-only clients!<br>
+        <strong>Important:</strong> bind_localhost = true binds the daemon to 127.0.0.1 only,
+        so it's not publicly reachable - only socat (localhost) can connect.<br>
+        <strong>Important:</strong> You must add your own Tor-based bootstrap nodes
+        in the bootstrap_nodes list! Without these, the daemon cannot connect
+        to the DHT network.
+    </div>
+
+    <h2 id="socat-bridges">Socat Bridge (DHT only)</h2>
+    
+    <div class="note">
+        <strong>Important:</strong> Only the DHT needs socat! The TCP relay already uses TCP natively.
+    </div>
+    
+    <p>Create a script for the DHT bridge only:</p>
+    <pre>#!/bin/bash
+# Only DHT port needs socat bridge (UDP↔TCP)
+# TCP relay is already TCP - no bridge needed
+
+socat TCP-LISTEN:33445,fork UDP:127.0.0.1:33445,bind=127.0.0.1,reuseaddr &
+
+echo "DHT socat bridge started on port 33445"</pre>
+    
+    <p>Or create systemd service for DHT bridge:</p>
+    <pre># /etc/systemd/system/tox-socat.service
+[Unit]
+Description=Tox DHT UDP↔TCP Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat TCP-LISTEN:33445,fork UDP:127.0.0.1:33445,bind=127.0.0.1,reuseaddr
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+    <h2 id="tor-hidden-service">Tor Hidden Service</h2>
+    
+    <p>Edit <code>/etc/tor/torrc</code>:</p>
+    <pre># Hidden service configuration
+HiddenServiceDir /var/lib/tor/tox_bootstrap
+
+# DHT port (Tor:33445 -> localhost:33445)
+HiddenServicePort 33445 127.0.0.1:33445
+
+# TCP relay (Tor:443 -> localhost:4444)
+HiddenServicePort 443 127.0.0.1:4444</pre>
+    
+    <p>Create the hidden service directory:</p>
+    <pre>sudo mkdir -p /var/lib/tor/tox_bootstrap
+sudo chown -R tor:tor /var/lib/tor/tox_bootstrap
+sudo chmod 700 /var/lib/tor/tox_bootstrap</pre>
+    
+    <p>Start Tor:</p>
+    <pre>sudo systemctl start tor
+sudo systemctl enable tor</pre>
+
+    <h2 id="onion-address">Getting Your .onion Address</h2>
+    <pre>sudo cat /var/lib/tor/tox_bootstrap/hostname</pre>
+    
+    <p>Output will be like:</p>
+    <pre>abcd1234567890abcdef.onion</pre>
+    
+    <div class="note">
+        <strong>Save these!</strong> You'll need:
+        <ul>
+            <li>The .onion address (port 33445) - for DHT bootstrapping</li>
+            <li>The .onion address (port 443) - for TCP relay</li>
+        </ul>
+    </div>
+
+    
+
+    <h2 id="client-setup">Client Setup</h2>
+    
+    <div class="step">
+        <h3>Step 1: Install Dependencies</h3>
+        <pre>sudo apt install torsocks</pre>
+    </div>
+    
+    <div class="step">
+        <h3>Step 2: Configure Client for TCP-Only Mode</h3>
+        <p>TCP-only mode is REQUIRED for Tor integration:</p>
+        <pre>// In your client code
+Tox_Options *opts = tox_options_new(NULL);
+opts->udp_enabled = false;  // Force TCP only via relays
+
+Tox *tox = tox_new(opts, NULL);
+tox_options_free(opts);</pre>
+    </div>
+    
+    <div class="step">
+        <h3>Step 3: Use .onion Bootstrap Addresses</h3>
+        <pre>// Bootstrap to your Tor-based nodes
+tox_bootstrap(tox, "yournode.onion", 33445, your_pubkey, NULL);
+
+// Add TCP relays
+tox_add_tcp_relay(tox, "yournode.onion", 443, your_pubkey, NULL);</pre>
+    </div>
+    
+    <div class="step">
+        <h3>Step 4: Run Client with torsocks</h3>
+        <pre># Run client through Tor
+torsocks ./your-tox-client
+
+# Or for debugging:
+TORSPROXY=127.0.0.1:9050 ./your-tox-client</pre>
+    </div>
+    
+    <h3>Complete Client Example</h3>
+    <pre>#include "tox.h"
+
+int main(void)
+{
+    // Enable TCP-only mode (REQUIRED for Tor)
+    Tox_Options *opts = tox_options_new(NULL);
+    opts->udp_enabled = false;
+    
+    Tox_Err_NEW err;
+    Tox *tox = tox_new(opts, &err);
+    tox_options_free(opts);
+    
+    if (err != TOX_ERR_NEW_OK) {
+        printf("Failed to create Tox: %d\n", err);
+        return 1;
+    }
+    
+    // Your bootstrap node's public key (32 bytes)
+    uint8_t pubkey[32] = { /* your node's public key */ };
+    
+    // Bootstrap to .onion address
+    tox_bootstrap(tox, "yournode.onion", 33445, pubkey, NULL);
+    
+    // Add TCP relay
+    tox_add_tcp_relay(tox, "yournode.onion", 443, pubkey, NULL);
+    
+    // Main loop
+    while (1) {
+        usleep(1000 * tox_iteration_interval(tox));
+        tox_iterate(tox, NULL);
+    }
+    
+    tox_kill(tox);
+    return 0;
+}</pre>
+
+    <h2 id="complete-startup">Complete Startup Sequence</h2>
+    
+    <pre># 1. Start Tor
+sudo systemctl start tor
+
+# 2. Start socat bridges
+sudo systemctl start tox-socat
+
+# 3. Start bootstrap daemon
+sudo systemctl start tox-bootstrapd
+
+# 4. Verify Tor is running
+systemctl status tor
+
+# 5. Verify socat is running
+ss -tlnp | grep socat
+
+# 6. Verify bootstrap daemon
+systemctl status tox-bootstrapd</pre>
+
+    <h2 id="notes">Important Notes</h2>
+    
+    <div class="warning">
+        <ul>
+            <li><strong>Tor adds latency</strong> - All operations will be slower</li>
+            <li><strong>Update monthly</strong> - The DHT protocol may change</li>
+            <li><strong>Keep .onion addresses secret</strong> - For true anonymity</li>
+            <li><strong>TCP relay required</strong> - TCP-only clients need relays</li>
+            <li><strong>Two ports</strong> - DHT (33445) + TCP relay (443)</li>
+        </ul>
+    </div>
+    
+    <h3>Port Summary</h3>
+    <table>
+        <tr><th>Port</th><th>Needs socat?</th><th>Purpose</th></tr>
+        <tr><td>33445</td><td>YES (UDP↔TCP)</td><td>DHT (peer discovery)</td></tr>
+        <tr><td>443</td><td>NO (native TCP)</td><td>TCP relay 1</td></tr>
+        
+
+    <hr>
+    <p>
+        <small>Generated from c-toxcore project documentation.</small>
+    </p>
+</body>
+</html>

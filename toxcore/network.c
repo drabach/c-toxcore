@@ -575,7 +575,13 @@ static int sys_setsockopt(void *_Nonnull obj, Socket sock, int level, int optnam
 
 // sets and fills an array of addrs for address
 // returns the number of entries in addrs
-static int sys_getaddrinfo(void *_Nonnull obj, const Memory *_Nonnull mem, const char *_Nonnull address, int family, int sock_type, Network_Addr **_Nonnull addrs)
+static int sys_getaddrinfo(
+		void *_Nonnull obj,
+		const Memory *_Nonnull mem,
+		const char *_Nonnull address,
+		int family,
+		int sock_type,
+		Network_Addr **_Nonnull addrs)
 {
     assert(addrs != nullptr);
 
@@ -1911,7 +1917,7 @@ static bool addr_resolve(const Network *_Nonnull ns, const Memory *_Nonnull mem,
     const int family = make_family(tox_family);
 
     Network_Addr *addrs = nullptr;
-    const int rc = ns->funcs->getaddrinfo(ns->obj, mem, address, family, 0, &addrs);
+    const int rc = ns->funcs->getaddrinfo(ns->obj, mem, address, family, AF_UNSPEC, &addrs);
 
     // Lookup failed / empty.
     if (rc <= 0) {
@@ -1984,7 +1990,13 @@ static bool addr_resolve(const Network *_Nonnull ns, const Memory *_Nonnull mem,
     return result != 0;
 }
 
-bool addr_resolve_or_parse_ip(const Network *ns, const Memory *mem, const char *address, IP *to, IP *extra, bool dns_enabled)
+bool addr_resolve_or_parse_ip(
+		const Network *ns,
+		const Memory *mem,
+		const char *address,
+		IP *to,
+		IP *extra,
+		bool dns_enabled)
 {
     if (dns_enabled && addr_resolve(ns, mem, address, to, extra)) {
         return true;

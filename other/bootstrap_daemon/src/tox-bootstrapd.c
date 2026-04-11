@@ -248,9 +248,11 @@ int main(int argc, char *argv[])
     int tcp_relay_port_count = 0;
     bool enable_motd = false;
     char *motd = nullptr;
+    bool bind_localhost = false;
 
     if (get_general_config(cfg_file_path, &pid_file_path, &keys_file_path, &start_port, &enable_ipv6, &enable_ipv4_fallback,
-                           &enable_lan_discovery, &enable_tcp_relay, &tcp_relay_ports, &tcp_relay_port_count, &enable_motd, &motd)) {
+                           &enable_lan_discovery, &enable_tcp_relay, &tcp_relay_ports, &tcp_relay_port_count, &enable_motd, &motd,
+                           &bind_localhost)) {
         log_write(LOG_LEVEL_INFO, "General config read successfully\n");
     } else {
         log_write(LOG_LEVEL_ERROR, "Couldn't read config file: %s. Exiting.\n", cfg_file_path);
@@ -281,7 +283,12 @@ int main(int argc, char *argv[])
     free(pid_file_path);
 
     IP ip;
-    ip_init(&ip, enable_ipv6);
+    if (bind_localhost) {
+        ip_init(&ip, false);
+        ip.ip.v4 = get_ip4_loopback();
+    } else {
+        ip_init(&ip, enable_ipv6);
+    }
 
     const Memory *mem = os_memory();
     const Random *rng = os_random();

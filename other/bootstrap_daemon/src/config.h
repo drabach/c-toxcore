@@ -24,7 +24,8 @@
  */
 bool get_general_config(const char *cfg_file_path, char **pid_file_path, char **keys_file_path, int *port,
                         bool *enable_ipv6, bool *enable_ipv4_fallback, bool *enable_lan_discovery, bool *enable_tcp_relay,
-                        uint16_t **tcp_relay_ports, int *tcp_relay_port_count, bool *enable_motd, char **motd);
+                        uint16_t **tcp_relay_ports, int *tcp_relay_port_count, bool *enable_motd, char **motd,
+                        bool *bind_localhost);
 
 /**
  * Bootstraps off nodes listed in the config file.
