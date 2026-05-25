@@ -189,9 +189,9 @@ while (real_plain[0] == 0) {
 
 `plain_len` is `int` (signed). The bounds check is inside the loop and fires before the next read. Safe as written — the earlier audit report misclassified this.
 
-### N2. VLA usage across codebase
+### N2. VLA usage across codebase (REVIEWED)
 
-Files using VLAs: `onion_client.c`, `onion_announce.c`, `onion.c`, `net_crypto.c`, `timed_auth.c`, `group.c`. Each VLA with network-influenced size should be reviewed. The most dangerous cases are documented above (C1, C2).
+All remaining VLA usages are bounded by protocol-level constants (`MAX_UDP_PACKET_SIZE=2048`, `MAX_CRYPTO_DATA_SIZE≈1373`, `ONION_MAX_PACKET_SIZE=1400`, or `uint8_t` limits). The unbounded cases C1 and C2 have been fixed.
 
 ---
 

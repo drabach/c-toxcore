@@ -211,8 +211,8 @@ memcpy(packet + 2, g->id, GROUP_ID_LENGTH);</code></pre>
     </div>
 
     <div class="finding severity-na">
-        <h4>N2. VLA usage across codebase</h4>
-        <p>Files using VLAs: <code>onion_client.c</code>, <code>onion_announce.c</code>, <code>onion.c</code>, <code>net_crypto.c</code>, <code>timed_auth.c</code>, <code>group.c</code>. Each VLA with network-influenced size should be reviewed. The most dangerous cases are documented above (C1, C2).</p>
+        <h4>N2. VLA usage across codebase <span style="background:#d5f5e3;border-radius:3px;padding:1px 5px;font-size:0.85em;color:#27ae60;font-weight:bold;">REVIEWED</span></h4>
+        <p>All remaining VLA usages are bounded by protocol-level constants (<code>MAX_UDP_PACKET_SIZE=2048</code>, <code>MAX_CRYPTO_DATA_SIZE≈1373</code>, <code>ONION_MAX_PACKET_SIZE=1400</code>, or <code>uint8_t</code> limits). The unbounded cases C1 and C2 have been fixed.</p>
     </div>
 
     <hr>
