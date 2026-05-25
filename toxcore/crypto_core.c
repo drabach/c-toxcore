@@ -6,9 +6,18 @@
 #include "crypto_core.h"
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <sodium.h>
+
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+#warning ╔══════════════════════════════════════════════════════════════════════╗
+#warning ║       FUZZING MODE ENABLED — ALL CRYPTO IS BYPASSED!               ║
+#warning ║  This build must NEVER be used in production. No encryption,        ║
+#warning ║  no signatures, no authentication — everything is plaintext.        ║
+#warning ╚══════════════════════════════════════════════════════════════════════╝
+#endif
 
 #include "attributes.h"
 #include "ccompat.h"
@@ -223,8 +232,34 @@ bool crypto_signature_verify(const uint8_t signature[CRYPTO_SIGNATURE_SIZE],
 
 bool public_key_valid(const uint8_t public_key[CRYPTO_PUBLIC_KEY_SIZE])
 {
-    /* Last bit of key is always zero. */
-    return public_key[31] < 128;
+    /* Bit 255 must be 0 for a Curve25519 field element. */
+    if (public_key[31] & 0x80) {
+        return false;
+    }
+
+    /* Full canonical encoding check: must be < 2^255 - 19.
+     *
+     * Curve25519 operates over GF(2^255 - 19). A field element has many
+     * encodings: e.g. (2^255 - 19 + k) encodes the same value as k. The
+     * canonical encoding is the unique representative in [0, 2^255 - 19).
+     *
+     * The modulus 2^255 - 19 in big-endian:
+     *   0x7f ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+     *   0xff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ed
+     *
+     * A value >= this modulus is non-canonical.  libsodium's
+     * crypto_scalarmult_curve25519 internally reduces non-canonical
+     * encodings, so the protocol is safe either way, but accepting
+     * them allows peers to waste CPU and enables fingerprinting.
+     */
+    static const uint8_t curve25519_p[CRYPTO_PUBLIC_KEY_SIZE] = {
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xed,
+    };
+
+    return memcmp(public_key, curve25519_p, CRYPTO_PUBLIC_KEY_SIZE) < 0;
 }
 
 int32_t encrypt_precompute(const uint8_t public_key[CRYPTO_PUBLIC_KEY_SIZE],
@@ -514,6 +549,14 @@ const Random *os_random(void)
 {
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
     if ((true)) {
+        fprintf(stderr, "\n");
+        fprintf(stderr, "╔══════════════════════════════════════════════════════════════════════╗\n");
+        fprintf(stderr, "║  ⚠  FUZZING BUILD MODE — ALL CRYPTO OPERATIONS ARE DISABLED!  ⚠   ║\n");
+        fprintf(stderr, "║  This binary MUST NOT be used in production. No encryption,         ║\n");
+        fprintf(stderr, "║  no signature verification, no authentication — all data is         ║\n");
+        fprintf(stderr, "║  transmitted and stored as plaintext.                               ║\n");
+        fprintf(stderr, "╚══════════════════════════════════════════════════════════════════════╝\n");
+        fprintf(stderr, "\n");
         return nullptr;
     }
 #endif /* FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION */

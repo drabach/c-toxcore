@@ -193,6 +193,14 @@ while (real_plain[0] == 0) {
 
 All remaining VLA usages are bounded by protocol-level constants (`MAX_UDP_PACKET_SIZE=2048`, `MAX_CRYPTO_DATA_SIZE≈1373`, `ONION_MAX_PACKET_SIZE=1400`, or `uint8_t` limits). The unbounded cases C1 and C2 have been fixed.
 
+### N3. `public_key_valid` canonical encoding check improved — `crypto_core.c:233` (FIXED)
+
+`public_key_valid` previously only checked that bit 255 was cleared (`public_key[31] < 128`). This rejects any value ≥ 2²⁵⁵, but values in [2²⁵⁵ − 19, 2²⁵⁵ − 1] are non-canonical encodings of valid field elements — they pass the bit check but represent the same element as a smaller canonical value.
+
+While X25519 handles non-canonical encodings safely (libsodium reduces them internally), accepting them wastes CPU and enables peer fingerprinting.
+
+**Fix:** Added a full canonical encoding check comparing the public key against the field modulus 2²⁵⁵ − 19. Values ≥ the modulus are rejected.
+
 ---
 
 ## C++ Files (Test/Fuzz Infrastructure)
@@ -208,6 +216,199 @@ Both are test-only, not exploitable in production.
 
 ---
 
+## Cryptographic Architecture Review
+
+### Underlying Library
+
+All cryptographic primitives are provided by **libsodium** (the NaCl fork). Compile-time `static_assert`s in `crypto_core.c:18–46` verify that Tox's constants match libsodium's, guaranteeing binary compatibility.
+
+### Core Primitives (libsodium mapping)
+
+| Tox Function | libsodium Primitive | Cryptographic Algorithm |
+|---|---|---|
+| `crypto_new_keypair` / `crypto_derive_public_key` | `crypto_scalarmult_curve25519_base` | X25519 (Curve25519 scalar multiplication) |
+| `encrypt_data` / `decrypt_data` | `crypto_box` (asymmetric) | X25519 + XSalsa20-Poly1305 (NaCl box) |
+| `encrypt_data_symmetric` / `decrypt_data_symmetric` | `crypto_box_afternm` / `crypto_box_open_afternm` | XSalsa20-Poly1305 with precomputed shared key |
+| `encrypt_precompute` | `crypto_box_beforenm` | X25519 Diffie-Hellman shared secret |
+| `crypto_signature_create` / `crypto_signature_verify` | `crypto_sign_detached` / `crypto_sign_verify_detached` | Ed25519 |
+| `crypto_hmac` / `crypto_hmac_verify` | `crypto_auth` / `crypto_auth_verify` | HMAC-SHA-512-256 |
+| `crypto_sha256` | `crypto_hash_sha256` | SHA-256 |
+| `crypto_sha512` | `crypto_hash_sha512` | SHA-512 |
+| `random_bytes` / `os_random` | `randombytes` | libsodium CSPRNG (`getrandom(2)` / `/dev/urandom`) |
+| `pk_equal` / `crypto_sha*_eq` | `crypto_verify_32` / `crypto_verify_64` | Constant-time comparison |
+| `crypto_memzero` | `sodium_memzero` | Guaranteed-zero (not optimised away) |
+| `crypto_memlock` / `crypto_memunlock` | `sodium_mlock` / `sodium_munlock` | `mlock(2)` / `munlock(2)` + zero |
+
+### Key Hierarchy
+
+```
+Ed25519 seed (32 bytes, from CSPRNG)
+    │
+    ├──crypto_sign_seed_keypair──► Ed25519 signing keypair (sk: 64B, pk: 32B)
+    │                                  │
+    │                                  ├──crypto_sign_ed25519_pk_to_curve25519──► Curve25519 encryption public key (pk.enc, 32B)
+    │                                  └──crypto_sign_ed25519_sk_to_curve25519──► Curve25519 encryption secret key (sk.enc, 32B)
+    │
+    └──► Extended_Public_Key  = { enc[32], sig[32] }   (EXT_PUBLIC_KEY_SIZE  = 64)
+         Extended_Secret_Key  = { enc[32], sig[64] }   (EXT_SECRET_KEY_SIZE  = 96)
+```
+
+Key generation uses `create_extended_keypair` (`crypto_core.c:48–63`):
+1. 32-byte seed → `crypto_sign_seed_keypair` → Ed25519 keypair
+2. `crypto_sign_ed25519_pk_to_curve25519` → Curve25519 encryption pk
+3. `crypto_sign_ed25519_sk_to_curve25519` → Curve25519 encryption sk
+4. Seed is zeroed via `crypto_memzero` after use
+
+The chat ID (`get_chat_id`) is the Ed25519 signature public key (`sig`), not the encryption key.
+
+### Connection Establishment Protocol
+
+Tox uses a 3-phase handshake to establish an encrypted channel between peers:
+
+#### Phase 1: Cookie Request/Response (DHT-level)
+
+```
+Initiator                              Responder
+    │                                       │
+    ├──NET_PACKET_COOKIE_REQUEST───────────►│
+    │  • self DHT public key (plaintext)    │
+    │  • nonce (random)                     │
+    │  • ciphertext(                        │
+    │      self_public_key ||               │
+    │      0x00*32 || number,               │
+    │      key = DHT_shared_key(self, peer) │
+    │    )                                  │
+    │                                       │
+    │◄──NET_PACKET_COOKIE_RESPONSE──────────┤
+    │  • nonce (random)                     │
+    │  • ciphertext(                        │
+    │      cookie(                          │
+    │        timestamp ||                   │
+    │        init_pk || dht_pk              │
+    │      ),                               │
+    │      key = DHT_shared_key(peer, self) │
+    │    )                                  │
+    │  • number (echoed from request)       │
+```
+
+- Cookie is a symmetrically encrypted blob (`create_cookie`, line 247) using the responder's `secret_symmetric_key`
+- Cookie contains a timestamp (15s validity, `COOKIE_TIMEOUT`), proving the requesting peer completed a DHT key exchange
+- The DHT shared key is computed via `crypto_box_beforenm` (X25519 ECDH) between the DHT keypairs
+
+#### Phase 2: Handshake
+
+```
+Initiator                              Responder
+    │                                       │
+    ├──NET_PACKET_CRYPTO_HS────────────────►│
+    │  • cookie (from Phase 1, plaintext)   │
+    │  • nonce (random)                     │
+    │  • ciphertext(                        │
+    │      session_nonce ||                 │
+    │      session_pk ||                    │
+    │      SHA512(cookie) ||                │
+    │      cookie2,                         │
+    │      key = NaCl_box(init_sk, peer_pk) │
+    │    )                                  │
+```
+
+1. Initiator extracts `cookie_plain` from cookie via `open_cookie` (symmetric, with timestamp check)
+2. Encrypts using asymmetric NaCl box (`encrypt_data` = `crypto_box`) with initiator's long-term secret key and responder's long-term public key
+3. Encrypted payload contains:
+   - `session_nonce`: the nonce the responder should use for its first data packet
+   - `session_pk`: initiator's ephemeral Curve25519 session public key
+   - `SHA512(cookie)`: proves the cookie was decrypted (binds handshake to cookie)
+   - `cookie2`: a fresh cookie for the responder to prove liveness
+
+#### Phase 3: Connection Establishment
+
+```
+Initiator                              Responder
+    │                                       │
+    │◄──(data packets encrypted)────────────┤
+    │  • uses shared_key =                   │
+    │    encrypt_precompute(                 │
+    │      peer_session_pk,                  │
+    │      self_session_sk                   │
+    │    )                                   │
+    │  • nonces increment sequentially        │
+    │    from the values exchanged in        │
+    │    the handshake                       │
+```
+
+After successful handshake:
+- Both sides compute: `shared_key = X25519(local_session_sk, peer_session_pk)` via `encrypt_precompute`
+- This is cached in the `Crypto_Connection` struct for the lifetime of the connection
+- All further data packets use `encrypt_data_symmetric` / `decrypt_data_symmetric` (XSalsa20-Poly1305 with the precomputed shared key)
+- Nonces are incremented monotonically (`increment_nonce`, big-endian addition) to prevent replay
+
+### Data Packet Encryption
+
+**Lossless packets** (`write_cryptpacket`):
+- Encrypted with `encrypt_data_symmetric` using the connection's `shared_key`
+- Each packet gets a unique nonce (sent_nonce, incremented per packet)
+- Packet numbers are tracked in a 32768-slot circular buffer for ACK-based retransmission
+- Congestion control based on RTT estimation and send queue depth
+
+**Lossy packets** (`send_lossy_cryptpacket`):
+- Same XSalsa20-Poly1305 encryption, same `shared_key`
+- No ACK/retransmission — fire-and-forget
+- Used for AV and lossy group conference data
+
+### Cookie Replay Protection
+
+Cookies use a timestamp-based validity window (`COOKIE_TIMEOUT = 15` seconds):
+- `open_cookie` (`net_crypto.c:269–289`) checks `cookie_time + COOKIE_TIMEOUT >= current_time`
+- Rejects cookies outside the window
+- This prevents long-term replay of captured cookie requests
+
+### Key Derivation for Save Encryption (`toxencryptsave`)
+
+```
+Password
+    │
+    ├──SHA256──► passkey (32B)
+    │               │
+    │               ├──crypto_pwhash_scryptsalsa208sha256──► derived key (32B)
+    │               │   • salt (random 32B, stored with ciphertext)
+    │               │   • OPSLIMIT_INTERACTIVE * 2
+    │               │   • MEMLIMIT_INTERACTIVE
+    │               │
+    │               └──► Tox_Pass_Key { salt[32], key[32] }
+    │
+    └──Encrypted format: magic[8] || salt[32] || nonce[24] || ciphertext+MAC[16]
+```
+
+- Password is pre-hashed with SHA-256 before scrypt, which limits password length to the hash output — this prevents slow-hashing of attacker-supplied long passwords (a known anti-DoS technique)
+- Encryption uses `encrypt_data_symmetric` (XSalsa20-Poly1305) with the derived key
+- Magic number `"toxEsave"` (8 bytes) identifies encrypted saves
+
+### Shared Key Cache
+
+`shared_key_cache.c` implements an LRU cache for X25519 shared secrets:
+- 256 buckets, indexed by `public_key[8]`
+- Each bucket holds `keys_per_slot` entries (configurable)
+- On miss: computes `encrypt_precompute(public_key, self_secret_key)` and evicts LRU entry
+- On hit: refreshes timestamp
+- Housekeeping on every lookup evicts timed-out entries
+- Uses `crypto_memlock` to prevent key material from being swapped to disk
+
+### Notable Design Observations
+
+1. **Fuzzing mode**: All crypto functions have fuzzing-safe alternatives (no-ops / memcpy-based) when `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` is defined. This is a deliberate trade-off for fuzzing coverage.
+
+2. **`public_key_valid` canonical encoding check** (`crypto_core.c:233`): Added full canonical encoding verification: `public_key < 2^255 - 19`. The previous check only verified bit 255 was clear, which allowed non-canonical encodings in [2^255 − 19, 2^255 − 1] to pass. While X25519 safely reduces non-canonical inputs, rejecting them prevents CPU waste and fingerprinting.
+
+3. **Nonce increment is big-endian** (`increment_nonce`, `crypto_core.c:383–400`), implemented with a manual carry chain. The code contains an explicit comment about Heartbleed-style loop bounds, indicating security-conscious design.
+
+4. **Forward secrecy**: Data packets use ephemeral-ephemeral X25519 (`encrypt_precompute(peersessionpublic_key, sessionsecret_key, shared_key)` at `net_crypto.c:1655`). The handshake only carries the ephemeral **public** key — the ephemeral **secret** key stays local. Compromising the long-term key decrypts the handshake but reveals only session public keys, not secret keys. The data channel has forward secrecy.
+
+   The handshake itself is encrypted with long-term `crypto_box` (X25519 between long-term keys). This means handshake contents (session nonces, public keys) can be recovered retroactively — but these are not secret material. A stronger design would sign the ephemeral keys with the long-term key rather than encrypt them, but the current design does provide PFS for actual payload data.
+
+5. **`increment_nonce_number`** (`crypto_core.c:402–422`): Supports batch nonce skipping by adding a number in big-endian. Used for fast-forwarding nonces when packets are dropped.
+
+---
+
 ## Summary
 
 | Severity | Count | Key Issues |
@@ -216,7 +417,7 @@ Both are test-only, not exploitable in production.
 | High | 3 | C1/H2 mitigation, H3 FIXED, H1: 5 sites FIXED (0 remain) |
 | Medium | 5 | off-by-one (test, FIXED), int truncation (test, FIXED), M3 FIXED, M4/M5 not a bug |
 | Low | 3 | L1 FIXED, L2 acknowledged (design), L3 minor |
-| Not a bug | 3 | N1 + M4 + M5 |
+| Not a bug | 4 | N1 + N3 FIXED, M4 + M5 |
 
 ### Remaining priority fixes
 
