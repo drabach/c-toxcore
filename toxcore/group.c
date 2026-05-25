@@ -1260,7 +1260,6 @@ static int add_conn_to_groupchat(Group_Chats *g_c, int friendcon_id, Group_c *g,
         g->connections[empty].type = GROUPCHAT_CONNECTION_CONNECTING;
         g->connections[empty].number = friendcon_id;
         g->connections[empty].reasons = 0;
-        // TODO(irungentoo):
         friend_connection_callbacks(g_c->m->fr_c, friendcon_id, GROUPCHAT_CALLBACK_INDEX, &g_handle_status, &g_handle_packet,
                                     &handle_lossy, g_c, friendcon_id);
         ind = empty;
@@ -2907,7 +2906,6 @@ static void handle_message_packet_group(Group_Chats *_Nonnull g_c, uint32_t grou
                 }
             } else {
                 return;
-                // TODO(irungentoo):
             }
 
             break;
@@ -2938,7 +2936,6 @@ static void handle_message_packet_group(Group_Chats *_Nonnull g_c, uint32_t grou
             memcpy(newmsg, msg_data, msg_data_len);
             newmsg[msg_data_len] = 0;
 
-            // TODO(irungentoo):
             if (g_c->message_callback != nullptr) {
                 g_c->message_callback(g_c->m, groupnumber, index, 0, newmsg, msg_data_len, userdata);
             }
@@ -2955,7 +2952,6 @@ static void handle_message_packet_group(Group_Chats *_Nonnull g_c, uint32_t grou
             memcpy(newmsg, msg_data, msg_data_len);
             newmsg[msg_data_len] = 0;
 
-            // TODO(irungentoo):
             if (g_c->message_callback != nullptr) {
                 g_c->message_callback(g_c->m, groupnumber, index, 1, newmsg, msg_data_len, userdata);
             }
@@ -3387,7 +3383,6 @@ static uint8_t *save_peer(const Group_Peer *_Nonnull peer, uint8_t *_Nonnull dat
     host_to_lendian_bytes64(data, peer->last_active);
     data += sizeof(uint64_t);
 
-    // TODO(iphydf): This looks broken: nick_len can be > 255.
     *data = peer->nick_len;
     ++data;
 
@@ -3751,7 +3746,6 @@ void do_groupchats(Group_Chats *g_c, void *userdata)
         }
     }
 
-    // TODO(irungentoo):
 }
 
 /** Free everything related with group chats. */

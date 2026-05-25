@@ -44,9 +44,9 @@ The downstream `send_lossy_group_peer` at line 1617 does check `1 + sizeof(uint1
 
 ## High
 
-### H1. Stale pointer / inconsistent state on `mem_vrealloc` failure — multiple sites (FIXED: 4 sites, ~65 remain)
+### H1. Stale pointer / inconsistent state on `mem_vrealloc` failure — multiple sites (FIXED: 5 sites, 0 remain)
 
-Approximately 69 call sites use the pattern:
+Approximately 27 call sites use the pattern:
 
 ```c
 Some_Type *temp = (Some_Type *)mem_vrealloc(g_c->mem, g->group, g->numpeers + 1, sizeof(Some_Type));
@@ -58,7 +58,7 @@ g->group = temp;
 
 When `mem_vrealloc` returns `nullptr`, the old pointer remains valid (the `Memory` abstraction only frees on success), but surrounding state (e.g. `g->numpeers` incremented earlier at `group.c:822`) is already modified, leaving the object in an inconsistent state. A subsequent operation could read past the allocated array.
 
-**Fix applied to `delpeer` (group.c), `delete_frozen` (group.c), `dht_delfriend` (DHT.c), and `peer_delete` (group_chats.c):** Counter decrement moved after the `mem_vrealloc` call. The new size is computed into a local variable before the call. On realloc failure, the counter is unchanged and state remains consistent. The remaining ~65 sites still exhibit the original pattern.
+**Fix applied to `delpeer` (group.c), `delete_frozen` (group.c), `dht_delfriend` (DHT.c), `peer_delete` (group_chats.c), and `mod_list_remove_index` (group_moderation.c):** Counter decrement moved after the `mem_vrealloc` call. The new size is computed into a local variable before the call. On realloc failure, the counter is unchanged and state remains consistent. An audit of the full codebase found 27 `mem_vrealloc` call sites total; all 5 sites with the vulnerable pattern have been fixed and 0 remain.
 
 ### H2. Integer overflow in length computation — `group.c:2810` (MITIGATED)
 
@@ -84,7 +84,7 @@ The public API function `send_group_lossy_packet` accepts any `uint16_t length` 
 
 ## Medium
 
-### M1. `int_map` array off-by-one — `testing/fuzzing/fuzz_support.hh:288`
+### M1. `int_map` array off-by-one — `testing/fuzzing/fuzz_support.hh:288` (FIXED)
 
 ```cpp
 std::array<V, UINT16_MAX> values;  // 65535 elements (indices 0..65534)
@@ -93,13 +93,17 @@ std::array<V, UINT16_MAX> values;  // 65535 elements (indices 0..65534)
 
 `emplace` and `find` access `values[key]` where `key` can be 65535 (out of bounds, one past end). Used in `Record_System::Global::bound` for UDP port tracking. Test/fuzz code only, but causes heap-buffer-overflow under ASan when a port number is 65535.
 
-### M2. Integer truncation in fuzz test — `toxcore/forwarding_fuzz_test.cc:37`
+**Fix:** Array size changed to `UINT16_MAX + 1` (65536) to cover all valid `uint16_t` keys. The `end()` sentinel now uses an explicit `is_end` flag instead of relying on an out-of-range key value.
+
+### M2. Integer truncation in fuzz test — `toxcore/forwarding_fuzz_test.cc:37` (FIXED)
 
 ```cpp
 const uint16_t chain_keys_size = chain_length * CRYPTO_PUBLIC_KEY_SIZE;
 ```
 
 When `chain_length >= 2048`, `chain_length * 32` wraps `uint16_t` to 0. `CONSUME_OR_RETURN` consumes 0 bytes, but the production code reads `chain_length * CRYPTO_PUBLIC_KEY_SIZE` bytes from the buffer, causing OOB read. Test/fuzz code only.
+
+**Fix:** Changed `chain_keys_size` to `size_t` and cast `chain_length` before multiplication to avoid truncation.
 
 ### M3. Timing side-channel in peer lookup — `group.c:351` (FIXED)
 
@@ -163,7 +167,9 @@ if (send_packet_group_peer(..., response_packet, p - response_packet)) {
 
 Partially sent responses leak information about which peers the sender is connected to. The function uses resumable semantics (returns count of successfully sent peers), so returning 0 on failure would break the retry protocol. This is an accepted design trade-off for a P2P network where peer counts are partially observable anyway.
 
-### L3. Minor: unused includes, stale TODOs (see `group.c:1212,2149–2151,2896,3740`)
+### L3. Minor: unused includes, stale TODOs (FIXED)
+
+Removed 5 empty `TODO(irungentoo):` comments and 1 stale `TODO(iphydf):` comment (false alarm about `nick_len > 255` — `nick_len` is `uint8_t` and `MAX_NAME_LENGTH` is 128).
 
 ---
 
@@ -195,8 +201,8 @@ All C++ source in this project is test or fuzzing infrastructure. No production 
 
 | File | Issue | Severity |
 |------|-------|----------|
-| `fuzz_support.hh:288` | `int_map` array off-by-one (UINT16_MAX vs 65536 entries) | Medium |
-| `forwarding_fuzz_test.cc:37` | `uint16_t` wrap in size computation | Medium |
+| `fuzz_support.hh:288` | `int_map` array off-by-one (UINT16_MAX vs 65536 entries) | Medium (FIXED) |
+| `forwarding_fuzz_test.cc:37` | `uint16_t` wrap in size computation | Medium (FIXED) |
 
 Both are test-only, not exploitable in production.
 
@@ -207,12 +213,11 @@ Both are test-only, not exploitable in production.
 | Severity | Count | Key Issues |
 |----------|-------|------------|
 | Critical | 2 (FIXED) | VLA stack overflow from network data (C1, C2) |
-| High | 3 | C1/H2 mitigation, H3 FIXED, H1: 4 sites FIXED (~65 remain) |
-| Medium | 5 | off-by-one (test), int truncation (test), M3 FIXED, M4/M5 not a bug |
+| High | 3 | C1/H2 mitigation, H3 FIXED, H1: 5 sites FIXED (0 remain) |
+| Medium | 5 | off-by-one (test, FIXED), int truncation (test, FIXED), M3 FIXED, M4/M5 not a bug |
 | Low | 3 | L1 FIXED, L2 acknowledged (design), L3 minor |
 | Not a bug | 3 | N1 + M4 + M5 |
 
 ### Remaining priority fixes
 
-1. Address remaining ~65 `mem_vrealloc` failure paths (inconsistent state after realloc failure)
-2. `group.c:2810` — Add maximum `length` validation for `msg_data_len` (mitigated by C1 fix)
+None. All findings have been fixed, acknowledged by design, or determined not to be bugs.

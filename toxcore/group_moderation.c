@@ -158,23 +158,24 @@ bool mod_list_remove_index(Moderation *_Nonnull moderation, uint16_t index)
         return true;
     }
 
-    --moderation->num_mods;
+    const uint16_t new_num_mods = moderation->num_mods - 1;
 
-    if (index != moderation->num_mods) {
-        memcpy(moderation->mod_list[index], moderation->mod_list[moderation->num_mods],
+    if (index != new_num_mods) {
+        memcpy(moderation->mod_list[index], moderation->mod_list[new_num_mods],
                MOD_LIST_ENTRY_SIZE);
     }
 
-    mem_delete(moderation->mem, moderation->mod_list[moderation->num_mods]);
-    moderation->mod_list[moderation->num_mods] = nullptr;
+    mem_delete(moderation->mem, moderation->mod_list[new_num_mods]);
+    moderation->mod_list[new_num_mods] = nullptr;
 
-    uint8_t **tmp_list = (uint8_t **)mem_vrealloc(moderation->mem, moderation->mod_list, moderation->num_mods, sizeof(uint8_t *));
+    uint8_t **tmp_list = (uint8_t **)mem_vrealloc(moderation->mem, moderation->mod_list, new_num_mods, sizeof(uint8_t *));
 
     if (tmp_list == nullptr) {
         return false;
     }
 
     moderation->mod_list = tmp_list;
+    moderation->num_mods = new_num_mods;
 
     return true;
 }

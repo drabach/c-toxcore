@@ -34,7 +34,7 @@ std::optional<std::tuple<IP_Port, IP_Port, const uint8_t *, size_t>> prepare(Fuz
 void TestSendForwardRequest(Fuzz_Data &input)
 {
     CONSUME1_OR_RETURN(const uint16_t, chain_length, input);
-    const uint16_t chain_keys_size = chain_length * CRYPTO_PUBLIC_KEY_SIZE;
+    const size_t chain_keys_size = static_cast<size_t>(chain_length) * CRYPTO_PUBLIC_KEY_SIZE;
     CONSUME_OR_RETURN(const uint8_t *chain_keys, input, chain_keys_size);
 
     const auto prep = prepare(input);

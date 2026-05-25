@@ -261,9 +261,10 @@ class int_map {
 public:
     struct iterator {
         std::pair<uint16_t, V> pair;
+        bool is_end;
 
-        bool operator==(const iterator &rhs) const { return pair.first == rhs.pair.first; }
-        bool operator!=(const iterator &rhs) const { return pair.first != rhs.pair.first; }
+        bool operator==(const iterator &rhs) const { return is_end == rhs.is_end && pair.first == rhs.pair.first; }
+        bool operator!=(const iterator &rhs) const { return !(*this == rhs); }
 
         std::pair<uint16_t, V> operator*() const { return pair; }
         const std::pair<uint16_t, V> *operator->() const { return &pair; }
@@ -277,15 +278,15 @@ public:
         if (!values[key]) {
             return end();
         }
-        return {{key, values[key]}};
+        return {{key, values[key], false}};
     }
 
-    iterator end() const { return {{static_cast<uint16_t>(values.size()), nullptr}}; }
+    iterator end() const { return {{0, nullptr, true}}; }
 
     void emplace(uint16_t key, V value) { values[key] = value; }
 
 private:
-    std::array<V, UINT16_MAX> values;
+    std::array<V, static_cast<std::size_t>(UINT16_MAX) + 1> values;
 };
 
 /**

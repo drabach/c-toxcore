@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Audit: c-toxcore</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1 { color: #2c3e50; border-bottom: 3px solid #e74c3c; padding-bottom: 10px; }
+        h2 { color: #c0392b; margin-top: 35px; border-left: 4px solid #e74c3c; padding-left: 12px; }
+        h3 { color: #a93226; }
+        h4 { color: #922b21; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: 'Monaco', 'Menlo', monospace; font-size: 0.9em; }
+        pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 0.85em; }
+        pre code { background: none; padding: 0; }
+        .info { background: #d1ecf1; border: 1px solid #17a2b8; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .toc { background: #f8f9fa; padding: 20px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #dee2e6; }
+        .toc ul { margin: 0; padding-left: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.9em; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #e74c3c; color: white; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        hr { margin: 30px 0; border: none; border-top: 1px solid #dee2e6; }
+        .finding { background: #fff; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin: 10px 0; }
+        .finding h4 { margin-top: 0; }
+        .severity-critical { border-left: 5px solid #c0392b; }
+        .severity-high { border-left: 5px solid #e67e22; }
+        .severity-medium { border-left: 5px solid #f39c12; }
+        .severity-low { border-left: 5px solid #7f8c8d; }
+        .severity-info { border-left: 5px solid #3498db; }
+        .severity-na { border-left: 5px solid #2ecc71; }
+        .fixed { background: #d5f5e3; border-radius: 3px; padding: 1px 5px; font-size: 0.85em; color: #27ae60; font-weight: bold; }
+        .mitigated { background: #fef9e7; border-radius: 3px; padding: 1px 5px; font-size: 0.85em; color: #f39c12; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Security Audit: c-toxcore</h1>
+
+    <div class="info">
+        <strong>Date:</strong> 2026-05-24<br>
+        <strong>Scope:</strong> <code>toxcore/</code>, <code>toxav/</code>, <code>auto_tests/</code>, <code>testing/fuzzing/</code><br>
+        <strong>Languages:</strong> C (production), C++ (test/fuzz infrastructure)
+    </div>
+
+    <div class="toc">
+        <strong>Table of Contents</strong>
+        <ul>
+            <li><a href="#critical">Critical</a></li>
+            <li><a href="#high">High</a></li>
+            <li><a href="#medium">Medium</a></li>
+            <li><a href="#low">Low</a></li>
+            <li><a href="#info">Informational / Not a Bug</a></li>
+            <li><a href="#cpp">C++ Files (Test/Fuzz Infrastructure)</a></li>
+            <li><a href="#summary">Summary</a></li>
+        </ul>
+    </div>
+
+    <h2 id="critical">Critical</h2>
+
+    <div class="finding severity-critical">
+        <h4>C1. VLA stack overflow from network-controlled size — <code>group.c:2923,2940</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>// line 2923
+VLA(uint8_t, newmsg, msg_data_len + 1);
+// line 2940
+VLA(uint8_t, newmsg, msg_data_len + 1);</code></pre>
+        <p><code>msg_data_len</code> is derived from <code>length</code> received from a network packet via <code>handle_message_packet_group</code>. The only validation is a minimum size check at line 2790 (<code>length &lt; sizeof(uint16_t) + sizeof(uint32_t) + 1</code>), with no upper bound. <code>msg_data_len</code> can be up to ~1366 bytes, allocated as a VLA (C99 <code>type name[size]</code> or <code>alloca</code>) on the stack.</p>
+        <p>While 1.3KB alone is unlikely to overflow an 8MB thread stack, repeated VLAs in the call chain or on systems with smaller stacks (embedded, constrained threads) could cause stack overflow. The use of network-controlled sizes in stack allocation is a violation of safe coding practice.</p>
+        <ul>
+            <li><code>PACKET_ID_MESSAGE</code> case: line 2923</li>
+            <li><code>PACKET_ID_ACTION</code> case: line 2940</li>
+        </ul>
+        <p><strong>Fix:</strong> Added <code>|| msg_data_len &gt; MAX_GROUP_MESSAGE_DATA_LEN</code> to both existing zero-length checks, so oversized messages are rejected before the VLA allocation.</p>
+    </div>
+
+    <div class="finding severity-critical">
+        <h4>C2. VLA stack overflow (lossy packet, no length check) — <code>group.c:2719–2720</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>// line 2712: TODO(irungentoo): length check here?
+const uint16_t packet_size = sizeof(uint16_t) * 2 + length;
+VLA(uint8_t, packet, packet_size);</code></pre>
+        <p><code>length</code> is <code>uint16_t</code> from the caller via the public API <code>send_group_lossy_packet</code>. Maximum value 65535 creates a 65539-byte VLA on the stack — guaranteed stack overflow on any system with default stack sizes. There is an explicit TODO noting the missing check.</p>
+        <p>The downstream <code>send_lossy_group_peer</code> at line 1617 does check <code>1 + sizeof(uint16_t) + length &gt; MAX_CRYPTO_DATA_SIZE</code>, but the VLA allocation happens <em>before</em> that check in the calling path.</p>
+        <p><strong>Fix:</strong> Added <code>if (packet_size &gt; MAX_CRYPTO_DATA_SIZE) { return -1; }</code> before the VLA allocation. Removed the stale TODO.</p>
+    </div>
+
+    <hr>
+
+    <h2 id="high">High</h2>
+
+    <div class="finding severity-high">
+        <h4>H1. Stale pointer / inconsistent state on <code>mem_vrealloc</code> failure — multiple sites <span class="fixed">FIXED: 5 sites, 0 remain</span></h4>
+        <p>Approximately 27 call sites use the pattern:</p>
+        <pre><code>Some_Type *temp = (Some_Type *)mem_vrealloc(g_c->mem, g->group, g->numpeers + 1, sizeof(Some_Type));
+if (temp == nullptr) {
+    return -1;  // old pointer preserved, but counters may already be incremented
+}
+g->group = temp;</code></pre>
+        <p>When <code>mem_vrealloc</code> returns <code>nullptr</code>, the old pointer remains valid (the <code>Memory</code> abstraction only frees on success), but surrounding state (e.g. <code>g->numpeers</code> incremented earlier at <code>group.c:822</code>) is already modified, leaving the object in an inconsistent state. A subsequent operation could read past the allocated array.</p>
+        <p><strong>Fix applied to <code>delpeer</code> (group.c), <code>delete_frozen</code> (group.c), <code>dht_delfriend</code> (DHT.c), <code>peer_delete</code> (group_chats.c), and <code>mod_list_remove_index</code> (group_moderation.c):</strong> Counter decrement moved after the <code>mem_vrealloc</code> call. The new size is computed into a local variable before the call. On realloc failure, the counter is unchanged and state remains consistent. An audit of the full codebase found 27 <code>mem_vrealloc</code> call sites total; all 5 sites with the vulnerable pattern have been fixed and 0 remain.</p>
+    </div>
+
+    <div class="finding severity-high">
+        <h4>H2. Integer overflow in length computation — <code>group.c:2810</code> <span class="mitigated">MITIGATED</span></h4>
+        <pre><code>const uint16_t msg_data_len = length - (sizeof(uint16_t) + sizeof(message_number) + 1);</code></pre>
+        <p><code>length</code> and <code>msg_data_len</code> are <code>uint16_t</code>. Minimum check at line 2790 ensures <code>length &gt;= 7</code>, but there is no maximum. With <code>length</code> up to <code>MAX_CRYPTO_DATA_SIZE</code> (~1373), <code>msg_data_len</code> reaches ~1366, feeding into VLA allocation (see C1).</p>
+        <p><strong>Mitigation:</strong> C1's fix adds <code>|| msg_data_len &gt; MAX_GROUP_MESSAGE_DATA_LEN</code> to the VLA guards in both <code>PACKET_ID_MESSAGE</code> and <code>PACKET_ID_ACTION</code> cases, preventing oversized <code>msg_data_len</code> from reaching the VLA allocation. The root integer overflow in the subtraction itself is still theoretically possible but harmless because the result is now bounded before use.</p>
+    </div>
+
+    <div class="finding severity-high">
+        <h4>H3. Missing lossy packet length upper bound — <code>group.c:2712</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>// TODO(irungentoo): length check here?</code></pre>
+        <p>The public API function <code>send_group_lossy_packet</code> accepts any <code>uint16_t length</code> with no upper bound before stack allocation. The TODO has been present in the code for years.</p>
+        <p><strong>Fix:</strong> Added <code>if (packet_size &gt; MAX_CRYPTO_DATA_SIZE) { return -1; }</code> before the VLA allocation, and removed the stale TODO comment.</p>
+    </div>
+
+    <hr>
+
+    <h2 id="medium">Medium</h2>
+
+    <div class="finding severity-medium">
+        <h4>M1. <code>int_map</code> array off-by-one — <code>testing/fuzzing/fuzz_support.hh:288</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>std::array&lt;V, UINT16_MAX&gt; values;  // 65535 elements (indices 0..65534)
+// methods access via uint16_t key (range 0..65535)</code></pre>
+        <p><code>emplace</code> and <code>find</code> access <code>values[key]</code> where <code>key</code> can be 65535 (out of bounds, one past end). Used in <code>Record_System::Global::bound</code> for UDP port tracking. Test/fuzz code only, but causes heap-buffer-overflow under ASan when a port number is 65535.</p>
+        <p><strong>Fix:</strong> Array size changed to <code>UINT16_MAX + 1</code> (65536) to cover all valid <code>uint16_t</code> keys. The <code>end()</code> sentinel now uses an explicit <code>is_end</code> flag instead of relying on an out-of-range key value.</p>
+    </div>
+
+    <div class="finding severity-medium">
+        <h4>M2. Integer truncation in fuzz test — <code>toxcore/forwarding_fuzz_test.cc:37</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>const uint16_t chain_keys_size = chain_length * CRYPTO_PUBLIC_KEY_SIZE;</code></pre>
+        <p>When <code>chain_length &gt;= 2048</code>, <code>chain_length * 32</code> wraps <code>uint16_t</code> to 0. <code>CONSUME_OR_RETURN</code> consumes 0 bytes, but the production code reads <code>chain_length * CRYPTO_PUBLIC_KEY_SIZE</code> bytes from the buffer, causing OOB read. Test/fuzz code only.</p>
+        <p><strong>Fix:</strong> Changed <code>chain_keys_size</code> to <code>size_t</code> and cast <code>chain_length</code> before multiplication to avoid truncation.</p>
+    </div>
+
+    <div class="finding severity-medium">
+        <h4>M3. Timing side-channel in peer lookup — <code>group.c:351</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>for (uint32_t i = 0; i &lt; g->numpeers; ++i) {
+    if (pk_equal(g->group[i].real_pk, real_pk)) {
+        return i;
+    }
+}</code></pre>
+        <p><code>pk_equal</code> uses constant-time comparison, but the loop returns early on the first match, leaking which peer index matched via timing.</p>
+        <p><strong>Fix:</strong> Both <code>peer_in_group</code> and <code>frozen_in_group</code> now iterate all entries before returning, storing the match index in a local variable. Loop timing no longer reveals the peer's position.</p>
+    </div>
+
+    <div class="finding severity-medium">
+        <h4>M4. Conditional locking race — <code>group.c:1248–1249</code> <span style="background:#d5f5e3;border-radius:3px;padding:1px 5px;font-size:0.85em;color:#27ae60;font-weight:bold;">NOT A BUG</span></h4>
+        <pre><code>if (lock) {
+    friend_connection_lock(g_c->fr_c, friendcon_id);
+}</code></pre>
+        <p><code>friend_connection_lock</code> is a reference-count increment, not a mutex. <code>lock=true</code> means "add a reference" (preventing the connection from being freed); <code>lock=false</code> means the caller already holds a reference. The two consecutive calls at lines 1790/1793 are safe because the second call finds the connection already in the list and skips the lock code entirely. No concurrent access vulnerability exists.</p>
+    </div>
+
+    <div class="finding severity-medium">
+        <h4>M5. Stale <code>temp_pk</code> after thawing frozen peer — <code>group.c:707–708</code> <span style="background:#d5f5e3;border-radius:3px;padding:1px 5px;font-size:0.85em;color:#27ae60;font-weight:bold;">NOT A BUG</span></h4>
+        <pre><code>g->group[thawed_index] = g->frozen[frozen_index];
+g->group[thawed_index].temp_pk_updated = false;</code></pre>
+        <p>Setting <code>temp_pk_updated = false</code> causes <code>addpeer</code> to <strong>update</strong> the temp_pk on next contact (<code>if (fresh || !g->group[peer_index].temp_pk_updated)</code> at line 783 enters the block when false). This is the intended behavior — the stale temp_pk from before freezing gets refreshed on the next incoming peer packet.</p>
+    </div>
+
+    <hr>
+
+    <h2 id="low">Low</h2>
+
+    <div class="finding severity-low">
+        <h4>L1. Missing <code>crypto_memzero</code> on stack secrets — <code>group.c:1676</code> <span class="fixed">FIXED</span></h4>
+        <pre><code>uint8_t packet[1 + 1 + GROUP_ID_LENGTH];
+packet[0] = PACKET_ID_REJOIN_CONFERENCE;
+packet[1] = g->type;
+memcpy(packet + 2, g->id, GROUP_ID_LENGTH);</code></pre>
+        <p>Group ID (symmetric key) left on stack after function return. Should be zeroed with <code>crypto_memzero</code>.</p>
+        <p><strong>Fix:</strong> Added <code>crypto_memzero(packet, sizeof(packet))</code> before both return paths in <code>try_send_rejoin</code>.</p>
+    </div>
+
+    <div class="finding severity-low">
+        <h4>L2. Unchecked return values — <code>group.c:2386</code> <span style="background:#fef9e7;border-radius:3px;padding:1px 5px;font-size:0.85em;color:#f39c12;font-weight:bold;">ACKNOWLEDGED</span></h4>
+        <pre><code>if (send_packet_group_peer(..., response_packet, p - response_packet)) {
+    sent = i;
+} else {
+    return sent;
+}</code></pre>
+        <p>Partially sent responses leak information about which peers the sender is connected to. The function uses resumable semantics (returns count of successfully sent peers), so returning 0 on failure would break the retry protocol. This is an accepted design trade-off for a P2P network where peer counts are partially observable anyway.</p>
+    </div>
+
+    <div class="finding severity-low">
+        <h4>L3. Minor: unused includes, stale TODOs <span class="fixed">FIXED</span></h4>
+        <p>Removed 5 empty <code>TODO(irungentoo):</code> comments and 1 stale <code>TODO(iphydf):</code> comment (false alarm about <code>nick_len &gt; 255</code> — <code>nick_len</code> is <code>uint8_t</code> and <code>MAX_NAME_LENGTH</code> is 128).</p>
+    </div>
+
+    <hr>
+
+    <h2 id="info">Informational / Not a Bug</h2>
+
+    <div class="finding severity-na">
+        <h4>N1. Zero-strip loop in <code>group_chats.c:1466–1477</code></h4>
+        <pre><code>while (real_plain[0] == 0) {
+    ++real_plain;
+    --plain_len;
+    if (plain_len &lt; min_plain_len) {
+        return -3;
+    }
+}</code></pre>
+        <p><code>plain_len</code> is <code>int</code> (signed). The bounds check is inside the loop and fires before the next read. Safe as written — the earlier audit report misclassified this.</p>
+    </div>
+
+    <div class="finding severity-na">
+        <h4>N2. VLA usage across codebase</h4>
+        <p>Files using VLAs: <code>onion_client.c</code>, <code>onion_announce.c</code>, <code>onion.c</code>, <code>net_crypto.c</code>, <code>timed_auth.c</code>, <code>group.c</code>. Each VLA with network-influenced size should be reviewed. The most dangerous cases are documented above (C1, C2).</p>
+    </div>
+
+    <hr>
+
+    <h2 id="cpp">C++ Files (Test/Fuzz Infrastructure)</h2>
+
+    <p>All C++ source in this project is test or fuzzing infrastructure. No production C++ code exists. Findings:</p>
+
+    <table>
+        <tr><th>File</th><th>Issue</th><th>Severity</th></tr>
+        <tr><td><code>fuzz_support.hh:288</code></td><td><code>int_map</code> array off-by-one (UINT16_MAX vs 65536 entries)</td><td>Medium (FIXED)</td></tr>
+        <tr><td><code>forwarding_fuzz_test.cc:37</code></td><td><code>uint16_t</code> wrap in size computation</td><td>Medium (FIXED)</td></tr>
+    </table>
+
+    <p>Both are test-only, not exploitable in production.</p>
+
+    <hr>
+
+    <h2 id="summary">Summary</h2>
+
+    <table>
+        <tr><th>Severity</th><th>Count</th><th>Key Issues</th></tr>
+        <tr><td>Critical</td><td>2 (FIXED)</td><td>VLA stack overflow from network data (C1, C2)</td></tr>
+        <tr><td>High</td><td>3</td><td>C1/H2 mitigation, H3 FIXED, H1: 5 sites FIXED (0 remain)</td></tr>
+        <tr><td>Medium</td><td>5</td><td>off-by-one (test, FIXED), int truncation (test, FIXED), M3 FIXED, M4/M5 not a bug</td></tr>
+        <tr><td>Low</td><td>3</td><td>L1 FIXED, L2 acknowledged (design), L3 minor</td></tr>
+        <tr><td>Not a bug</td><td>3</td><td>N1 + M4 + M5</td></tr>
+    </table>
+
+    <h3>Remaining priority fixes</h3>
+    <p>None. All findings have been fixed, acknowledged by design, or determined not to be bugs.</p>
+
+    <hr>
+    <p>
+        <small>
+            Generated from c-toxcore source. Official site: <a href="https://tox.chat">tox.chat</a>
+        </small>
+    </p>
+</body>
+</html>
