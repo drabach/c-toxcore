@@ -239,6 +239,37 @@ memcpy(packet + 2, g->id, GROUP_ID_LENGTH);</code></pre>
 
     <hr>
 
+    <h2 id="changes">Code Changes (2026-05-25)</h2>
+
+    <div class="finding severity-info">
+        <h4>Change 1: Fuzzing mode warning &mdash; <code>crypto_core.c</code></h4>
+        <p><strong>Problem:</strong> When built with <code>FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION</code>, all cryptographic operations are replaced with no-ops (plaintext passthrough). There was no warning to alert developers or users that the resulting binary is completely insecure.</p>
+        <p><strong>Fix:</strong> Added two warnings:</p>
+        <ol>
+            <li><strong>Compile-time</strong> (<code>#warning</code> directive, lines 14&ndash;20): Emits a boxed warning at build time when the flag is defined.</li>
+            <li><strong>Runtime</strong> (<code>fprintf(stderr, ...)</code> in <code>os_random</code>, lines 525&ndash;535): Prints a loud boxed warning to stderr every time the RNG is initialised in fuzzing mode, then returns <code>nullptr</code>.</li>
+        </ol>
+        <p>The runtime warning is particularly important because fuzzing binaries may be distributed or accidentally deployed.</p>
+    </div>
+
+    <div class="finding severity-info">
+        <h4>Change 2: Full canonical encoding check &mdash; <code>crypto_core.c:233&ndash;268</code></h4>
+        <p><strong>Problem:</strong> <code>public_key_valid</code> only checked bit 255 (<code>public_key[31] &lt; 128</code>). This rejected values &ge; 2&sup2;&sup5;&sup5;, but values in [2&sup2;&sup5;&sup5; &minus; 19, 2&sup2;&sup5;&sup5; &minus; 1] passed despite being non-canonical encodings of valid field elements. While X25519 handles these safely, accepting them wastes CPU and enables peer fingerprinting.</p>
+        <p><strong>Fix:</strong> Added a full canonical encoding check. Since Curve25519 uses little-endian encoding and the bit-255 check already ensures <code>public_key[31] &le; 0x7f</code>, the additional check only triggers when <code>public_key[31] == 0x7f</code> (the modulus byte). It verifies that the lower 31 bytes are not all &ge; the modulus&apos;s lower bytes &mdash; specifically that bytes 1..30 are not all <code>0xff</code> while byte 0 &ge; <code>0xed</code>.</p>
+        <p><strong>Bug encountered during implementation:</strong> The first version used <code>memcmp</code> with a big-endian modulus array, which is incorrect for little-endian Curve25519 encoding. The second version was missing a <code>return true</code> for the common case (<code>public_key[31] &lt; 0x7f</code>), causing undefined behaviour that broke all friend-add operations.</p>
+    </div>
+
+    <h3>Risk assessment</h3>
+
+    <table>
+        <tr><th>Change</th><th>Risk</th><th>Mitigation</th></tr>
+        <tr><td>Fuzzing <code>#warning</code></td><td>None</td><td>Preprocessor-only, zero runtime cost in normal builds</td></tr>
+        <tr><td>Fuzzing <code>fprintf</code></td><td>None</td><td><code>FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION</code> guard; dead code in normal builds</td></tr>
+        <tr><td>Canonical encoding check</td><td>Low</td><td>All legitimately generated keys (<code>crypto_scalarmult_curve25519_base</code>) produce canonical encodings. Only hand-crafted keys could trigger rejection. Verified against all 68 ctest tests.</td></tr>
+    </table>
+
+    <hr>
+
     <h2 id="crypto">Cryptographic Architecture Review</h2>
 
     <h3>Underlying Library</h3>

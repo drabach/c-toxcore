@@ -216,6 +216,36 @@ Both are test-only, not exploitable in production.
 
 ---
 
+## Code Changes (2026-05-25)
+
+### Change 1: Fuzzing mode warning — `crypto_core.c`
+
+**Problem:** When built with `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION`, all cryptographic operations are replaced with no-ops (plaintext passthrough). There was no warning to alert developers or users that the resulting binary is completely insecure.
+
+**Fix:** Added two warnings:
+1. **Compile-time** (`#warning` directive, lines 14–20): Emits a boxed warning at build time when the flag is defined.
+2. **Runtime** (`fprintf(stderr, ...)` in `os_random`, lines 525–535): Prints a loud boxed warning to stderr every time the RNG is initialised in fuzzing mode, then returns `nullptr`.
+
+The runtime warning is particularly important because fuzzing binaries may be distributed or accidentally deployed.
+
+### Change 2: Full canonical encoding check — `crypto_core.c:233–268`
+
+**Problem:** `public_key_valid` only checked bit 255 (`public_key[31] < 128`). This rejected values ≥ 2²⁵⁵, but values in [2²⁵⁵ − 19, 2²⁵⁵ − 1] passed despite being non-canonical encodings of valid field elements. While X25519 handles these safely, accepting them wastes CPU and enables peer fingerprinting.
+
+**Fix:** Added a full canonical encoding check. Since Curve25519 uses little-endian encoding and the bit-255 check already ensures `public_key[31] ≤ 0x7f`, the additional check only triggers when `public_key[31] == 0x7f` (the modulus byte). It verifies that the lower 31 bytes are not all ≥ the modulus's lower bytes — specifically that bytes 1..30 are not all `0xff` while byte 0 ≥ `0xed`.
+
+**Bug encountered during implementation:** The first version used `memcmp` with a big-endian modulus array, which is incorrect for little-endian Curve25519 encoding. The second version was missing a `return true` for the common case (`public_key[31] < 0x7f`), causing undefined behaviour that broke all friend-add operations.
+
+### Risk assessment
+
+| Change | Risk | Mitigation |
+|--------|------|------------|
+| Fuzzing `#warning` | None | Preprocessor-only, zero runtime cost in normal builds |
+| Fuzzing `fprintf` | None | `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` guard; dead code in normal builds |
+| Canonical encoding check | Low | All legitimately generated keys (`crypto_scalarmult_curve25519_base`) produce canonical encodings. Only hand-crafted keys could trigger rejection. Verified against all 68 ctest tests. |
+
+---
+
 ## Cryptographic Architecture Review
 
 ### Underlying Library

@@ -243,23 +243,28 @@ bool public_key_valid(const uint8_t public_key[CRYPTO_PUBLIC_KEY_SIZE])
      * encodings: e.g. (2^255 - 19 + k) encodes the same value as k. The
      * canonical encoding is the unique representative in [0, 2^255 - 19).
      *
-     * The modulus 2^255 - 19 in big-endian:
-     *   0x7f ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
-     *   0xff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ed
+     * The encoding is little-endian: public_key[0] is the least significant
+     * byte and public_key[31] is the most significant (containing bit 255).
+     * The bit-255 check above ensures public_key[31] <= 0x7f, which matches
+     * the modulus p[31] = 0x7f.  For public_key[31] < 0x7f, the value is
+     * always canonical.  For public_key[31] == 0x7f, we check the lower 31
+     * bytes: p[1..30] = 0xff and p[0] = 0xed.  The value is >= p iff
+     * bytes 1..30 are all 0xff and byte 0 >= 0xed.
      *
-     * A value >= this modulus is non-canonical.  libsodium's
-     * crypto_scalarmult_curve25519 internally reduces non-canonical
-     * encodings, so the protocol is safe either way, but accepting
-     * them allows peers to waste CPU and enables fingerprinting.
+     * libsodium's crypto_scalarmult_curve25519 reduces non-canonical
+     * encodings internally, so the protocol is safe either way, but
+     * accepting them wastes CPU and enables peer fingerprinting.
      */
-    static const uint8_t curve25519_p[CRYPTO_PUBLIC_KEY_SIZE] = {
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xed,
-    };
+    if (public_key[31] == 0x7f && public_key[0] >= 0xed) {
+        for (size_t i = 1; i < 31; i++) {
+            if (public_key[i] != 0xff) {
+                return true;
+            }
+        }
+        return false;
+    }
 
-    return memcmp(public_key, curve25519_p, CRYPTO_PUBLIC_KEY_SIZE) < 0;
+    return true;
 }
 
 int32_t encrypt_precompute(const uint8_t public_key[CRYPTO_PUBLIC_KEY_SIZE],
