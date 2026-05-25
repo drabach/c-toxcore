@@ -6569,23 +6569,24 @@ static bool peer_delete(const GC_Session *_Nonnull c, GC_Chat *_Nonnull chat, ui
 
     gcc_peer_cleanup(chat->mem, gconn);
 
-    --chat->numpeers;
+    const int new_numpeers = chat->numpeers - 1;
 
-    if (chat->numpeers != peer_number) {
-        chat->group[peer_number] = chat->group[chat->numpeers];
+    if (new_numpeers != (int)peer_number) {
+        chat->group[peer_number] = chat->group[new_numpeers];
     }
 
-    chat->group[chat->numpeers] = (GC_Peer) {
+    chat->group[new_numpeers] = (GC_Peer) {
         0
     };
 
-    GC_Peer *tmp_group = (GC_Peer *)mem_vrealloc(chat->mem, chat->group, chat->numpeers, sizeof(GC_Peer));
+    GC_Peer *tmp_group = (GC_Peer *)mem_vrealloc(chat->mem, chat->group, new_numpeers, sizeof(GC_Peer));
 
     if (tmp_group == nullptr) {
         return false;
     }
 
     chat->group = tmp_group;
+    chat->numpeers = new_numpeers;
 
     set_gc_peerlist_checksum(chat);
 

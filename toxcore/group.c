@@ -348,24 +348,28 @@ static Group_c *get_group_c(const Group_Chats *_Nonnull g_c, uint32_t groupnumbe
  */
 static int peer_in_group(const Group_c *_Nonnull g, const uint8_t *_Nonnull real_pk)
 {
+    int index = -1;
+
     for (uint32_t i = 0; i < g->numpeers; ++i) {
         if (pk_equal(g->group[i].real_pk, real_pk)) {
-            return i;
+            index = i;
         }
     }
 
-    return -1;
+    return index;
 }
 
 static int frozen_in_group(const Group_c *_Nonnull g, const uint8_t *_Nonnull real_pk)
 {
+    int index = -1;
+
     for (uint32_t i = 0; i < g->numfrozen; ++i) {
         if (pk_equal(g->frozen[i].real_pk, real_pk)) {
-            return i;
+            index = i;
         }
     }
 
-    return -1;
+    return index;
 }
 
 /**
@@ -646,17 +650,17 @@ static bool delete_frozen(const Memory *_Nonnull mem, Group_c *_Nonnull g, uint3
         return false;
     }
 
-    --g->numfrozen;
-
-    if (g->numfrozen == 0) {
+    if (g->numfrozen == 1) {
         mem_delete(mem, g->frozen);
         g->frozen = nullptr;
     } else {
-        if (g->numfrozen != frozen_index) {
-            g->frozen[frozen_index] = g->frozen[g->numfrozen];
+        const uint32_t new_numfrozen = g->numfrozen - 1;
+
+        if (new_numfrozen != frozen_index) {
+            g->frozen[frozen_index] = g->frozen[new_numfrozen];
         }
 
-        Group_Peer *const frozen_temp = (Group_Peer *)mem_vrealloc(mem, g->frozen, g->numfrozen, sizeof(Group_Peer));
+        Group_Peer *const frozen_temp = (Group_Peer *)mem_vrealloc(mem, g->frozen, new_numfrozen, sizeof(Group_Peer));
 
         if (frozen_temp == nullptr) {
             return false;
@@ -664,6 +668,8 @@ static bool delete_frozen(const Memory *_Nonnull mem, Group_c *_Nonnull g, uint3
 
         g->frozen = frozen_temp;
     }
+
+    --g->numfrozen;
 
     return true;
 }
@@ -886,19 +892,19 @@ static bool delpeer(Group_Chats *g_c, uint32_t groupnumber, int peer_index, void
         }
     }
 
-    --g->numpeers;
-
     void *peer_object = g->group[peer_index].object;
 
-    if (g->numpeers == 0) {
+    if (g->numpeers == 1) {
         mem_delete(g_c->mem, g->group);
         g->group = nullptr;
     } else {
-        if (g->numpeers != (uint32_t)peer_index) {
-            g->group[peer_index] = g->group[g->numpeers];
+        const uint32_t new_numpeers = g->numpeers - 1;
+
+        if (new_numpeers != (uint32_t)peer_index) {
+            g->group[peer_index] = g->group[new_numpeers];
         }
 
-        Group_Peer *temp = (Group_Peer *)mem_vrealloc(g_c->mem, g->group, g->numpeers, sizeof(Group_Peer));
+        Group_Peer *temp = (Group_Peer *)mem_vrealloc(g_c->mem, g->group, new_numpeers, sizeof(Group_Peer));
 
         if (temp == nullptr) {
             return false;
@@ -906,6 +912,8 @@ static bool delpeer(Group_Chats *g_c, uint32_t groupnumber, int peer_index, void
 
         g->group = temp;
     }
+
+    --g->numpeers;
 
     if (g_c->peer_list_changed_callback != nullptr) {
         g_c->peer_list_changed_callback(g_c->m, groupnumber, userdata);
@@ -1680,11 +1688,13 @@ static bool try_send_rejoin(Group_Chats *g_c, Group_c *g, const uint8_t *real_pk
 
     if (write_cryptpacket(friendconn_net_crypto(g_c->fr_c), friend_connection_crypt_connection_id(g_c->fr_c, friendcon_id),
                           packet, sizeof(packet), false) == -1) {
+        crypto_memzero(packet, sizeof(packet));
         return false;
     }
 
     add_conn_to_groupchat(g_c, friendcon_id, g, GROUPCHAT_CONNECTION_REASON_INTRODUCER, true);
 
+    crypto_memzero(packet, sizeof(packet));
     return true;
 }
 
@@ -2709,7 +2719,6 @@ int group_action_send(const Group_Chats *g_c, uint32_t groupnumber, const uint8_
  */
 int send_group_lossy_packet(const Group_Chats *g_c, uint32_t groupnumber, const uint8_t *data, uint16_t length)
 {
-    // TODO(irungentoo): length check here?
     Group_c *g = get_group_c(g_c, groupnumber);
 
     if (g == nullptr) {
@@ -2717,6 +2726,11 @@ int send_group_lossy_packet(const Group_Chats *g_c, uint32_t groupnumber, const 
     }
 
     const uint16_t packet_size = sizeof(uint16_t) * 2 + length;
+
+    if (packet_size > MAX_CRYPTO_DATA_SIZE) {
+        return -1;
+    }
+
     VLA(uint8_t, packet, packet_size);
     const uint16_t peer_number = net_htons(g->peer_number);
     memcpy(packet, &peer_number, sizeof(uint16_t));
@@ -2916,7 +2930,7 @@ static void handle_message_packet_group(Group_Chats *_Nonnull g_c, uint32_t grou
         }
 
         case PACKET_ID_MESSAGE: {
-            if (msg_data_len == 0) {
+            if (msg_data_len == 0 || msg_data_len > MAX_GROUP_MESSAGE_DATA_LEN) {
                 return;
             }
 
@@ -2933,7 +2947,7 @@ static void handle_message_packet_group(Group_Chats *_Nonnull g_c, uint32_t grou
         }
 
         case PACKET_ID_ACTION: {
-            if (msg_data_len == 0) {
+            if (msg_data_len == 0 || msg_data_len > MAX_GROUP_MESSAGE_DATA_LEN) {
                 return;
             }
 

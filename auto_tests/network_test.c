@@ -48,7 +48,8 @@ static void test_addr_resolv_localhost(void)
 
     int localhost_split = 0;
 
-    if (!net_family_is_ipv6(ip.family)) {
+    if (!res) {
+        ip_init(&ip, 1);
         res = addr_resolve_or_parse_ip(ns, mem, "ip6-localhost", &ip, nullptr, true);
         localhost_split = 1;
     }

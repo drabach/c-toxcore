@@ -1620,25 +1620,27 @@ int dht_delfriend(DHT *dht, const uint8_t *public_key, uint32_t lock_token)
         return 0;
     }
 
-    --dht->num_friends;
+    const uint32_t new_num_friends = dht->num_friends - 1;
 
-    if (dht->num_friends != friend_num) {
-        dht->friends_list[friend_num] = dht->friends_list[dht->num_friends];
+    if (new_num_friends != friend_num) {
+        dht->friends_list[friend_num] = dht->friends_list[new_num_friends];
     }
 
-    if (dht->num_friends == 0) {
+    if (new_num_friends == 0) {
         mem_delete(dht->mem, dht->friends_list);
         dht->friends_list = nullptr;
+        dht->num_friends = 0;
         return 0;
     }
 
-    DHT_Friend *const temp = (DHT_Friend *)mem_vrealloc(dht->mem, dht->friends_list, dht->num_friends, sizeof(DHT_Friend));
+    DHT_Friend *const temp = (DHT_Friend *)mem_vrealloc(dht->mem, dht->friends_list, new_num_friends, sizeof(DHT_Friend));
 
     if (temp == nullptr) {
         return -1;
     }
 
     dht->friends_list = temp;
+    dht->num_friends = new_num_friends;
     return 0;
 }
 

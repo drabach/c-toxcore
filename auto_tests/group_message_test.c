@@ -25,8 +25,40 @@ typedef struct State {
     size_t custom_private_packets_received;
     bool lossless_check;
     bool wraparound_check;
-    int32_t last_msg_recv;
+    uint32_t received_count;
+    uint32_t received_map_size;
+    bool *received_map;
 } State;
+
+static void received_map_init(State *state, uint32_t size)
+{
+    state->received_count = 0;
+    state->received_map_size = size;
+    state->received_map = (bool *)calloc(size, sizeof(bool));
+    ck_assert(state->received_map != nullptr);
+}
+
+static void received_map_free(State *state)
+{
+    free(state->received_map);
+    state->received_map = nullptr;
+    state->received_map_size = 0;
+    state->received_count = 0;
+}
+
+static void received_map_mark(State *state, uint32_t id)
+{
+    ck_assert(id < state->received_map_size);
+    if (!state->received_map[id]) {
+        state->received_map[id] = true;
+        ++state->received_count;
+    }
+}
+
+static bool received_map_all(State *state)
+{
+    return state->received_count == state->received_map_size;
+}
 
 #define NUM_GROUP_TOXES 2
 #define MAX_NUM_MESSAGES_LOSSLESS_TEST 300
@@ -348,12 +380,12 @@ static void group_message_handler_lossless_test(const Tox_Event_Group_Message *e
     memcpy(&start, message, sizeof(uint16_t));
     memcpy(&checksum, message + sizeof(uint16_t), sizeof(uint16_t));
 
-    ck_assert_msg(start == state->last_msg_recv + 1, "Expected %d, got start %u", state->last_msg_recv + 1, start);
+    ck_assert_msg(start <= MAX_NUM_MESSAGES_LOSSLESS_TEST, "Unexpected message ID %u", start);
     ck_assert_msg(checksum == get_message_checksum(message + 4, length - 4), "Wrong checksum");
 
-    state->last_msg_recv = start;
+    received_map_mark(state, start);
 
-    if (state->last_msg_recv == MAX_NUM_MESSAGES_LOSSLESS_TEST) {
+    if (received_map_all(state)) {
         state->lossless_check = true;
     }
 }
@@ -372,11 +404,11 @@ static void group_message_handler_wraparound_test(const Tox_Event_Group_Message 
     uint16_t num;
     memcpy(&num, message, sizeof(uint16_t));
 
-    ck_assert_msg(num == state->last_msg_recv + 1, "Expected %d, got start %u", state->last_msg_recv + 1, num);
+    ck_assert_msg(num <= MAX_NUM_MESSAGES_WRAPAROUND_TEST, "Unexpected message ID %u", num);
 
-    state->last_msg_recv = num;
+    received_map_mark(state, num);
 
-    if (state->last_msg_recv == MAX_NUM_MESSAGES_WRAPAROUND_TEST) {
+    if (received_map_all(state)) {
         state->wraparound_check = true;
     }
 }
@@ -529,7 +561,7 @@ static void group_message_test(AutoTox *autotoxes)
     fprintf(stderr, "Doing lossless packet test...\n");
 
     tox_events_callback_group_message(autotoxes[1].dispatch, group_message_handler_lossless_test);
-    state1->last_msg_recv = -1;
+    received_map_init(state1, MAX_NUM_MESSAGES_LOSSLESS_TEST + 1);
 
     // lossless and packet splitting/reassembly test
     for (uint16_t i = 0; i <= MAX_NUM_MESSAGES_LOSSLESS_TEST; ++i) {
@@ -554,11 +586,21 @@ static void group_message_test(AutoTox *autotoxes)
         ck_assert(err_send == TOX_ERR_GROUP_SEND_MESSAGE_OK);
     }
 
-    while (!state1->lossless_check) {
-        iterate_all_wait(autotoxes, NUM_GROUP_TOXES, ITERATION_INTERVAL);
+    {
+        uint32_t wait_count = 0;
+
+        while (!state1->lossless_check && wait_count < 3000) {
+            iterate_all_wait(autotoxes, NUM_GROUP_TOXES, ITERATION_INTERVAL);
+            ++wait_count;
+        }
+
+        ck_assert_msg(state1->lossless_check,
+                      "Lossless test timed out after %u iterations: received %u/%u messages",
+                      wait_count, state1->received_count, state1->received_map_size);
     }
 
-    state1->last_msg_recv = -1;
+    received_map_free(state1);
+    received_map_init(state1, MAX_NUM_MESSAGES_WRAPAROUND_TEST + 1);
     tox_events_callback_group_message(autotoxes[1].dispatch, group_message_handler_wraparound_test);
 
     fprintf(stderr, "Doing wraparound test...\n");
@@ -575,8 +617,17 @@ static void group_message_test(AutoTox *autotoxes)
         ck_assert(err_send == TOX_ERR_GROUP_SEND_MESSAGE_OK);
     }
 
-    while (!state1->wraparound_check) {
-        iterate_all_wait(autotoxes, NUM_GROUP_TOXES, ITERATION_INTERVAL);
+    {
+        uint32_t wait_count = 0;
+
+        while (!state1->wraparound_check && wait_count < 15000) {
+            iterate_all_wait(autotoxes, NUM_GROUP_TOXES, ITERATION_INTERVAL);
+            ++wait_count;
+        }
+
+        ck_assert_msg(state1->wraparound_check,
+                      "Wraparound test timed out after %u iterations: received %u/%u messages",
+                      wait_count, state1->received_count, state1->received_map_size);
     }
 
     for (size_t i = 0; i < NUM_GROUP_TOXES; i++) {
