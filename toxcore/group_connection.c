@@ -513,6 +513,8 @@ static bool process_recv_array_entry(const GC_Session *_Nonnull c, GC_Chat *_Non
     const bool ret = handle_gc_lossless_helper(c, chat, peer_number, array_entry->data, array_entry->data_length,
                      array_entry->packet_type, userdata);
 
+    const uint64_t msg_id = array_entry->message_id;
+
     /* peer number can change from peer add operations in packet handlers */
     peer_number = get_peer_number_of_enc_pk(chat, sender_pk, false);
     gconn = get_gc_connection(chat, peer_number);
@@ -524,11 +526,11 @@ static bool process_recv_array_entry(const GC_Session *_Nonnull c, GC_Chat *_Non
     }
 
     if (!ret) {
-        gc_send_message_ack(chat, gconn, array_entry->message_id, GR_ACK_REQ);
+        gc_send_message_ack(chat, gconn, msg_id, GR_ACK_REQ);
         return false;
     }
 
-    gc_send_message_ack(chat, gconn, array_entry->message_id, GR_ACK_RECV);
+    gc_send_message_ack(chat, gconn, msg_id, GR_ACK_RECV);
 
     gcc_set_recv_message_id(gconn, gconn->received_message_id + 1);
 
@@ -542,10 +544,18 @@ void gcc_check_recv_array(const GC_Session *c, GC_Chat *chat, GC_Connection *gco
         return;
     }
 
-    const uint16_t idx = (gconn->received_message_id + 1) % GCC_BUFFER_SIZE;
-    GC_Message_Array_Entry *const array_entry = &gconn->recv_array[idx];
+    while (true) {
+        const uint16_t idx = (gconn->received_message_id + 1) % GCC_BUFFER_SIZE;
+        GC_Message_Array_Entry *const array_entry = &gconn->recv_array[idx];
 
-    if (!array_entry_is_empty(array_entry)) {
+        if (array_entry_is_empty(array_entry)) {
+            break;
+        }
+
+        if (array_entry->message_id != gconn->received_message_id + 1) {
+            break;
+        }
+
         process_recv_array_entry(c, chat, gconn, peer_number, array_entry, userdata);
     }
 }
