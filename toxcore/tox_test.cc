@@ -79,6 +79,42 @@ TEST(Tox, BootstrapErrorCodes)
     tox_kill(tox);
 }
 
+TEST(Tox, BootstrapWithOnionAddress)
+{
+    Tox *tox = tox_new(nullptr, nullptr);
+    ASSERT_NE(tox, nullptr);
+
+    std::array<uint8_t, TOX_PUBLIC_KEY_SIZE> pk{};
+    Tox_Err_Bootstrap err;
+
+    EXPECT_TRUE(tox_bootstrap(tox, "3g2upl4pq6kufc4m.onion", 443, pk.data(), &err));
+    EXPECT_EQ(err, TOX_ERR_BOOTSTRAP_OK);
+
+    tox_bootstrap(tox, "xyz.onion", 443, nullptr, &err);
+    EXPECT_EQ(err, TOX_ERR_BOOTSTRAP_NULL);
+
+    tox_bootstrap(tox, "xyz.onion", 0, pk.data(), &err);
+    EXPECT_EQ(err, TOX_ERR_BOOTSTRAP_BAD_PORT);
+
+    tox_kill(tox);
+}
+
+TEST(Tox, AddTcpRelayWithOnionAddress)
+{
+    Tox *tox = tox_new(nullptr, nullptr);
+    ASSERT_NE(tox, nullptr);
+
+    std::array<uint8_t, TOX_PUBLIC_KEY_SIZE> pk{};
+    Tox_Err_Bootstrap err;
+
+    EXPECT_TRUE(tox_add_tcp_relay(tox, "3g2upl4pq6kufc4m.onion", 443, pk.data(), &err));
+    EXPECT_EQ(err, TOX_ERR_BOOTSTRAP_OK);
+
+    EXPECT_TRUE(tox_add_tcp_relay(tox, "3g2upl4pq6kufc4m.onion", 443, pk.data(), &err));
+
+    tox_kill(tox);
+}
+
 TEST(Tox, OneTest)
 {
     struct Tox_Options *options = tox_options_new(nullptr);

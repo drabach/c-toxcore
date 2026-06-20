@@ -228,7 +228,8 @@ Net_Crypto *onion_get_net_crypto(const Onion_Client *onion_c)
  */
 bool onion_add_bs_path_node(Onion_Client *onion_c, const IP_Port *ip_port, const uint8_t *public_key)
 {
-    if (!net_family_is_ipv4(ip_port->ip.family) && !net_family_is_ipv6(ip_port->ip.family)) {
+    if (!net_family_is_ipv4(ip_port->ip.family) && !net_family_is_ipv6(ip_port->ip.family)
+            && !net_family_is_onion(ip_port->ip.family)) {
         return false;
     }
 
@@ -296,15 +297,25 @@ uint16_t onion_backup_nodes(const Onion_Client *onion_c, Node_format *nodes, uin
     const uint16_t num_nodes = min_u16(onion_c->path_nodes_index, MAX_PATH_NODES);
     uint16_t i = 0;
 
-    while (i < max_num && i < num_nodes) {
-        nodes[i] = onion_c->path_nodes[(onion_c->path_nodes_index - (1 + i)) % num_nodes];
+    for (uint16_t k = 0; i < max_num && k < num_nodes; ++k) {
+        const Node_format *node = &onion_c->path_nodes[(onion_c->path_nodes_index - (1 + k)) % num_nodes];
+
+        if (net_family_is_onion(node->ip_port.ip.family)) {
+            continue;
+        }
+
+        nodes[i] = *node;
         ++i;
     }
 
     for (uint16_t j = 0; i < max_num && j < MAX_PATH_NODES && j < onion_c->path_nodes_index_bs; ++j) {
+        if (net_family_is_onion(onion_c->path_nodes_bs[j].ip_port.ip.family)) {
+            continue;
+        }
+
         bool already_saved = false;
 
-        for (uint16_t k = 0; k < num_nodes; ++k) {
+        for (uint16_t k = 0; k < i; ++k) {
             if (pk_equal(nodes[k].public_key, onion_c->path_nodes_bs[j].public_key)) {
                 already_saved = true;
                 break;

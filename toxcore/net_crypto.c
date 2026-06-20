@@ -2170,6 +2170,11 @@ int add_tcp_relay(Net_Crypto *c, const IP_Port *ip_port, const uint8_t *public_k
     return add_tcp_relay_global(c->tcp_c, ip_port, public_key);
 }
 
+int add_tcp_relay_onion(Net_Crypto *c, const IP_Port *ip_port, const uint8_t *public_key, const char *onion_domain)
+{
+    return add_tcp_relay_global_onion(c->tcp_c, ip_port, public_key, onion_domain);
+}
+
 /** @brief Return a random TCP connection number for use in send_tcp_onion_request.
  *
  * TODO(irungentoo): This number is just the index of an array that the elements can

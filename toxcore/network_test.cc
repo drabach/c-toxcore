@@ -168,4 +168,43 @@ TEST(IpportCmp, InvalidAlwaysComparesEqual)
     EXPECT_EQ(ipport_cmp_handler(&a, &b, sizeof(IP_Port)), 0);
 }
 
+TEST(NetIsOnion, DetectsOnionSuffix)
+{
+    EXPECT_TRUE(net_is_onion("xyz.onion"));
+    EXPECT_TRUE(net_is_onion("3g2upl4pq6kufc4m.onion"));
+    EXPECT_TRUE(net_is_onion("a.b.onion"));
+}
+
+TEST(NetIsOnion, RejectsNonOnion)
+{
+    EXPECT_FALSE(net_is_onion("example.com"));
+    EXPECT_FALSE(net_is_onion("127.0.0.1"));
+    EXPECT_FALSE(net_is_onion("onion"));
+    EXPECT_FALSE(net_is_onion("fakeonion.com"));
+    EXPECT_FALSE(net_is_onion("x.onion."));
+    EXPECT_FALSE(net_is_onion(""));
+    EXPECT_FALSE(net_is_onion(nullptr));
+}
+
+TEST(NetFamilyOnion, FamilyFunctions)
+{
+    const Family onion = net_family_onion();
+    EXPECT_TRUE(net_family_is_onion(onion));
+    EXPECT_FALSE(net_family_is_ipv4(onion));
+    EXPECT_FALSE(net_family_is_ipv6(onion));
+
+    const Family ipv4 = net_family_ipv4();
+    EXPECT_FALSE(net_family_is_onion(ipv4));
+
+    const Family ipv6 = net_family_ipv6();
+    EXPECT_FALSE(net_family_is_onion(ipv6));
+}
+
+TEST(NetFamilyOnion, OnionReturnsTrueForOnionFamily)
+{
+    IP_Port ipp = {{{0}}};
+    ipp.ip.family = net_family_onion();
+    EXPECT_TRUE(net_family_is_onion(ipp.ip.family));
+}
+
 }  // namespace

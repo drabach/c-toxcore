@@ -283,9 +283,14 @@ int main(int argc, char *argv[])
     free(pid_file_path);
 
     IP ip;
+    IP tcp_bind_ip;
+    bool use_tcp_bind_ip = false;
     if (bind_localhost) {
         ip_init(&ip, false);
         ip.ip.v4 = get_ip4_loopback();
+        ip_init(&tcp_bind_ip, false);
+        tcp_bind_ip.ip.v4 = get_ip4_loopback();
+        use_tcp_bind_ip = true;
     } else {
         ip_init(&ip, enable_ipv6);
     }
@@ -498,7 +503,8 @@ int main(int argc, char *argv[])
 
         tcp_server = new_tcp_server(logger, mem, rng, ns, enable_ipv6,
                                     tcp_relay_port_count, tcp_relay_ports,
-                                    dht_get_self_secret_key(dht), onion, forwarding);
+                                    dht_get_self_secret_key(dht), onion, forwarding,
+                                    use_tcp_bind_ip ? &tcp_bind_ip : nullptr);
 
         free(tcp_relay_ports);
 

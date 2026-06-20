@@ -1074,6 +1074,32 @@ static int32_t resolve_bootstrap_node(Tox *_Nullable tox, const char *_Nullable 
 
 bool tox_bootstrap(Tox *tox, const char *host, uint16_t port, const uint8_t public_key[TOX_PUBLIC_KEY_SIZE], Tox_Err_Bootstrap *error)
 {
+    if (host == nullptr || public_key == nullptr) {
+        SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_NULL);
+        return false;
+    }
+
+    if (port == 0) {
+        SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_BAD_PORT);
+        return false;
+    }
+
+    if (net_is_onion(host)) {
+        tox_lock(tox);
+
+        IP_Port onion_ip_port;
+        onion_ip_port.ip.family = net_family_onion();
+        onion_ip_port.ip.ip.v4.uint32 = 0;
+        onion_ip_port.port = net_htons(port);
+
+        add_tcp_relay_onion(tox->m->net_crypto, &onion_ip_port, public_key, host);
+
+        tox_unlock(tox);
+
+        SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_OK);
+        return true;
+    }
+
     IP_Port *root;
     const int32_t count = resolve_bootstrap_node(tox, host, port, public_key, &root, error);
 
@@ -1131,6 +1157,32 @@ bool tox_bootstrap(Tox *tox, const char *host, uint16_t port, const uint8_t publ
 bool tox_add_tcp_relay(Tox *tox, const char *host, uint16_t port, const uint8_t public_key[TOX_PUBLIC_KEY_SIZE],
                        Tox_Err_Bootstrap *error)
 {
+    if (host == nullptr || public_key == nullptr) {
+        SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_NULL);
+        return false;
+    }
+
+    if (port == 0) {
+        SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_BAD_PORT);
+        return false;
+    }
+
+    if (net_is_onion(host)) {
+        tox_lock(tox);
+
+        IP_Port onion_ip_port;
+        onion_ip_port.ip.family = net_family_onion();
+        onion_ip_port.ip.ip.v4.uint32 = 0;
+        onion_ip_port.port = net_htons(port);
+
+        add_tcp_relay_onion(tox->m->net_crypto, &onion_ip_port, public_key, host);
+
+        tox_unlock(tox);
+
+        SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_OK);
+        return true;
+    }
+
     IP_Port *root;
     const int32_t count = resolve_bootstrap_node(tox, host, port, public_key, &root, error);
 

@@ -38,6 +38,7 @@ struct TCP_Client_Connection {
     uint8_t public_key[CRYPTO_PUBLIC_KEY_SIZE]; /* public key of the server */
     IP_Port ip_port; /* The ip and port of the server */
     TCP_Proxy_Info proxy_info;
+    char onion_domain[256]; /* .onion domain name (empty if not onion) */
     uint8_t recv_nonce[CRYPTO_NONCE_SIZE]; /* Nonce of received packets. */
     uint16_t next_packet_length;
 
@@ -209,6 +210,7 @@ enum Tcp_Socks5_Proxy_Hs {
     TCP_SOCKS5_PROXY_HS_NO_AUTH                 = 0x00,
     TCP_SOCKS5_PROXY_HS_RESERVED                = 0x00,
     TCP_SOCKS5_PROXY_HS_ADDR_TYPE_IPV4          = 0x01,
+    TCP_SOCKS5_PROXY_HS_ADDR_TYPE_DOMAINNAME    = 0x03,
     TCP_SOCKS5_PROXY_HS_ADDR_TYPE_IPV6          = 0x04,
 };
 
@@ -251,7 +253,15 @@ static void proxy_socks5_generate_connection_request(TCP_Client_Connection *_Non
     tcp_conn->con.last_packet[2] = TCP_SOCKS5_PROXY_HS_RESERVED;
     uint16_t length = 3;
 
-    if (net_family_is_ipv4(tcp_conn->ip_port.ip.family)) {
+    if (net_family_is_onion(tcp_conn->ip_port.ip.family)) {
+        const size_t domain_len = strlen(tcp_conn->onion_domain);
+        tcp_conn->con.last_packet[3] = TCP_SOCKS5_PROXY_HS_ADDR_TYPE_DOMAINNAME;
+        ++length;
+        tcp_conn->con.last_packet[length] = (uint8_t)domain_len;
+        ++length;
+        memcpy(tcp_conn->con.last_packet + length, tcp_conn->onion_domain, domain_len);
+        length += domain_len;
+    } else if (net_family_is_ipv4(tcp_conn->ip_port.ip.family)) {
         tcp_conn->con.last_packet[3] = TCP_SOCKS5_PROXY_HS_ADDR_TYPE_IPV4;
         ++length;
         memcpy(tcp_conn->con.last_packet + length, tcp_conn->ip_port.ip.ip.v4.uint8, sizeof(IP4));
@@ -277,7 +287,7 @@ static void proxy_socks5_generate_connection_request(TCP_Client_Connection *_Non
  */
 static int proxy_socks5_read_connection_response(const Logger *_Nonnull logger, const TCP_Client_Connection *_Nonnull tcp_conn)
 {
-    if (net_family_is_ipv4(tcp_conn->ip_port.ip.family)) {
+    if (net_family_is_ipv4(tcp_conn->ip_port.ip.family) || net_family_is_onion(tcp_conn->ip_port.ip.family)) {
         uint8_t data[4 + sizeof(IP4) + sizeof(uint16_t)];
         const TCP_Connection *con = &tcp_conn->con;
         const int ret = read_tcp_packet(logger, con->mem, con->ns, con->sock, data, sizeof(data), &con->ip_port);
@@ -586,7 +596,8 @@ void forwarding_handler(TCP_Client_Connection *con, forwarded_response_cb *forwa
 TCP_Client_Connection *new_tcp_connection(
     const Logger *logger, const Memory *mem, const Mono_Time *mono_time, const Random *rng, const Network *ns,
     const IP_Port *ip_port, const uint8_t *public_key, const uint8_t *self_public_key, const uint8_t *self_secret_key,
-    const TCP_Proxy_Info *proxy_info, Net_Profile *_Nullable net_profile)
+    const TCP_Proxy_Info *proxy_info, Net_Profile *_Nullable net_profile,
+    const char *_Nullable onion_domain)
 {
     assert(logger != nullptr);
     assert(mem != nullptr);
@@ -594,7 +605,8 @@ TCP_Client_Connection *new_tcp_connection(
     assert(rng != nullptr);
     assert(ns != nullptr);
 
-    if (!net_family_is_ipv4(ip_port->ip.family) && !net_family_is_ipv6(ip_port->ip.family)) {
+    if (!net_family_is_ipv4(ip_port->ip.family) && !net_family_is_ipv6(ip_port->ip.family)
+            && !net_family_is_onion(ip_port->ip.family)) {
         LOGGER_ERROR(logger, "Invalid IP family: %d", ip_port->ip.family.value);
         return nullptr;
     }
@@ -657,6 +669,11 @@ TCP_Client_Connection *new_tcp_connection(
     encrypt_precompute(temp->public_key, self_secret_key, temp->con.shared_key);
     temp->ip_port = *ip_port;
     temp->proxy_info = *proxy_info;
+    if (onion_domain != nullptr && net_family_is_onion(ip_port->ip.family)) {
+        snprintf(temp->onion_domain, sizeof(temp->onion_domain), "%s", onion_domain);
+    } else {
+        temp->onion_domain[0] = '\0';
+    }
 
     switch (proxy_info->proxy_type) {
         case TCP_PROXY_HTTP: {

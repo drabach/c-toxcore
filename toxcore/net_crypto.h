@@ -282,6 +282,9 @@ int add_tcp_relay_peer(Net_Crypto *_Nonnull c, int crypt_connection_id, const IP
  */
 int add_tcp_relay(Net_Crypto *_Nonnull c, const IP_Port *_Nonnull ip_port, const uint8_t *_Nonnull public_key);
 
+int add_tcp_relay_onion(Net_Crypto *_Nonnull c, const IP_Port *_Nonnull ip_port, const uint8_t *_Nonnull public_key,
+                        const char *_Nonnull onion_domain);
+
 /** @brief Return a random TCP connection number for use in send_tcp_onion_request.
  *
  * TODO(irungentoo): This number is just the index of an array that the elements can

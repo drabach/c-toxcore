@@ -244,6 +244,9 @@ int add_tcp_relay_connection(TCP_Connections *_Nonnull tcp_c, int connections_nu
  */
 int add_tcp_relay_global(TCP_Connections *_Nonnull tcp_c, const IP_Port *_Nonnull ip_port, const uint8_t *_Nonnull relay_pk);
 
+int add_tcp_relay_global_onion(TCP_Connections *_Nonnull tcp_c, const IP_Port *_Nonnull ip_port,
+                               const uint8_t *_Nonnull relay_pk, const char *_Nonnull onion_domain);
+
 /** @brief Copy a maximum of max_num TCP relays we are connected to to tcp_relays.
  *
  * NOTE that the family of the copied ip ports will be set to TCP_INET or TCP_INET6.

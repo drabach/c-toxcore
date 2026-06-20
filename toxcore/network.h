@@ -107,6 +107,9 @@ Family net_family_tcp_ipv4(void);
 Family net_family_tcp_ipv6(void);
 Family net_family_tox_tcp_ipv4(void);
 Family net_family_tox_tcp_ipv6(void);
+Family net_family_onion(void);
+bool net_family_is_onion(Family family);
+bool net_is_onion(const char *host);
 
 #define MAX_UDP_PACKET_SIZE 2048
 
@@ -181,6 +184,8 @@ typedef enum Net_Packet_Type {
 #define TCP_INET (TOX_AF_INET6 + 2)
 #define TCP_INET6 (TOX_AF_INET6 + 3)
 #define TCP_SERVER_FAMILY (TOX_AF_INET6 + 4)
+
+#define TOX_AF_ONION (TOX_AF_INET6 + 5)
 
 #define SIZE_IP4 4
 #define SIZE_IP6 16
@@ -534,7 +539,7 @@ int unpack_ip_port(IP_Port *_Nonnull ip_port, const uint8_t *_Nonnull data, uint
 /**
  * @return true on success, false on failure.
  */
-bool bind_to_port(const Network *_Nonnull ns, Socket sock, Family family, uint16_t port);
+bool bind_to_port(const Network *_Nonnull ns, Socket sock, Family family, uint16_t port, const IP *_Nullable bind_ip);
 
 /** @brief Get the last networking error code.
  *

@@ -61,7 +61,7 @@ static void test_basic(void)
     uint8_t self_public_key[CRYPTO_PUBLIC_KEY_SIZE];
     uint8_t self_secret_key[CRYPTO_SECRET_KEY_SIZE];
     crypto_new_keypair(rng, self_public_key, self_secret_key);
-    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr);
+    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(tcp_s != nullptr, "Failed to create a TCP relay server.");
     ck_assert_msg(tcp_server_listen_count(tcp_s) == NUM_PORTS,
                   "Failed to bind a TCP relay server to all %d attempted ports.", NUM_PORTS);
@@ -326,7 +326,7 @@ static void test_some(void)
     uint8_t self_public_key[CRYPTO_PUBLIC_KEY_SIZE];
     uint8_t self_secret_key[CRYPTO_SECRET_KEY_SIZE];
     crypto_new_keypair(rng, self_public_key, self_secret_key);
-    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr);
+    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(tcp_s != nullptr, "Failed to create TCP relay server");
     ck_assert_msg(tcp_server_listen_count(tcp_s) == NUM_PORTS, "Failed to bind to all ports.");
 
@@ -524,7 +524,7 @@ static void test_client(void)
     uint8_t self_public_key[CRYPTO_PUBLIC_KEY_SIZE];
     uint8_t self_secret_key[CRYPTO_SECRET_KEY_SIZE];
     crypto_new_keypair(rng, self_public_key, self_secret_key);
-    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr);
+    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(tcp_s != nullptr, "Failed to create a TCP relay server.");
     ck_assert_msg(tcp_server_listen_count(tcp_s) == NUM_PORTS, "Failed to bind the relay server to all ports.");
 
@@ -536,7 +536,7 @@ static void test_client(void)
     ip_port_tcp_s.port = net_htons(ports[random_u32(rng) % NUM_PORTS]);
     ip_port_tcp_s.ip = get_loopback();
 
-    TCP_Client_Connection *conn = new_tcp_connection(logger, mem, mono_time, rng, ns, &ip_port_tcp_s, self_public_key, f_public_key, f_secret_key, nullptr, nullptr);
+    TCP_Client_Connection *conn = new_tcp_connection(logger, mem, mono_time, rng, ns, &ip_port_tcp_s, self_public_key, f_public_key, f_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(conn != nullptr, "Failed to create a TCP client connection.");
     // TCP sockets might need a moment before they can be written to.
     c_sleep(50);
@@ -573,7 +573,7 @@ static void test_client(void)
     crypto_new_keypair(rng, f2_public_key, f2_secret_key);
     ip_port_tcp_s.port = net_htons(ports[random_u32(rng) % NUM_PORTS]);
     TCP_Client_Connection *conn2 = new_tcp_connection(logger, mem, mono_time, rng, ns, &ip_port_tcp_s, self_public_key, f2_public_key,
-                                   f2_secret_key, nullptr, nullptr);
+                                   f2_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(conn2 != nullptr, "Failed to create a second TCP client connection.");
     c_sleep(50);
 
@@ -671,7 +671,7 @@ static void test_client_invalid(void)
     ip_port_tcp_s.port = net_htons(ports[random_u32(rng) % NUM_PORTS]);
     ip_port_tcp_s.ip = get_loopback();
     TCP_Client_Connection *conn = new_tcp_connection(logger, mem, mono_time, rng, ns, &ip_port_tcp_s,
-                                  self_public_key, f_public_key, f_secret_key, nullptr, nullptr);
+                                  self_public_key, f_public_key, f_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(conn != nullptr, "Failed to create a TCP client connection.");
 
     // Run the client's main loop but not the server.
@@ -745,7 +745,7 @@ static void test_tcp_connection(void)
     uint8_t self_public_key[CRYPTO_PUBLIC_KEY_SIZE];
     uint8_t self_secret_key[CRYPTO_SECRET_KEY_SIZE];
     crypto_new_keypair(rng, self_public_key, self_secret_key);
-    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr);
+    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(pk_equal(tcp_server_public_key(tcp_s), self_public_key), "Wrong public key");
 
     TCP_Proxy_Info proxy_info;
@@ -867,7 +867,7 @@ static void test_tcp_connection2(void)
     uint8_t self_public_key[CRYPTO_PUBLIC_KEY_SIZE];
     uint8_t self_secret_key[CRYPTO_SECRET_KEY_SIZE];
     crypto_new_keypair(rng, self_public_key, self_secret_key);
-    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr);
+    TCP_Server *tcp_s = new_tcp_server(logger, mem, rng, ns, USE_IPV6, NUM_PORTS, ports, self_secret_key, nullptr, nullptr, nullptr);
     ck_assert_msg(pk_equal(tcp_server_public_key(tcp_s), self_public_key), "Wrong public key");
 
     TCP_Proxy_Info proxy_info;

@@ -912,7 +912,7 @@ static int reconnect_tcp_relay_connection(TCP_Connections *_Nonnull tcp_c, int t
     memcpy(relay_pk, tcp_con_public_key(tcp_con->connection), CRYPTO_PUBLIC_KEY_SIZE);
     kill_tcp_connection(tcp_con->connection);
     tcp_con->connection = new_tcp_connection(tcp_c->logger, tcp_c->mem, tcp_c->mono_time, tcp_c->rng, tcp_c->ns, &ip_port, relay_pk, tcp_c->self_public_key, tcp_c->self_secret_key, &tcp_c->proxy_info,
-                          tcp_c->net_profile);
+                          tcp_c->net_profile, nullptr);
 
     if (tcp_con->connection == nullptr) {
         kill_tcp_relay_connection(tcp_c, tcp_connections_number);
@@ -999,7 +999,7 @@ static int unsleep_tcp_relay_connection(TCP_Connections *_Nonnull tcp_c, int tcp
 
     tcp_con->connection = new_tcp_connection(
                               tcp_c->logger, tcp_c->mem, tcp_c->mono_time, tcp_c->rng, tcp_c->ns, &tcp_con->ip_port,
-                              tcp_con->relay_pk, tcp_c->self_public_key, tcp_c->self_secret_key, &tcp_c->proxy_info, tcp_c->net_profile);
+                              tcp_con->relay_pk, tcp_c->self_public_key, tcp_c->self_secret_key, &tcp_c->proxy_info, tcp_c->net_profile, nullptr);
 
     if (tcp_con->connection == nullptr) {
         kill_tcp_relay_connection(tcp_c, tcp_connections_number);
@@ -1284,7 +1284,42 @@ static int add_tcp_relay_instance(TCP_Connections *_Nonnull tcp_c, const IP_Port
 
     tcp_con->connection = new_tcp_connection(
                               tcp_c->logger, tcp_c->mem, tcp_c->mono_time, tcp_c->rng, tcp_c->ns, &ipp_copy,
-                              relay_pk, tcp_c->self_public_key, tcp_c->self_secret_key, &tcp_c->proxy_info, tcp_c->net_profile);
+                              relay_pk, tcp_c->self_public_key, tcp_c->self_secret_key, &tcp_c->proxy_info, tcp_c->net_profile, nullptr);
+
+    if (tcp_con->connection == nullptr) {
+        return -1;
+    }
+
+    tcp_con->status = TCP_CONN_VALID;
+
+    return tcp_connections_number;
+}
+
+/** @brief Add a TCP relay instance for an onion domain.
+ *
+ * Like add_tcp_relay_instance() but accepts an onion domain name.
+ *
+ * return tcp_connections_number on success.
+ * return -1 on failure.
+ */
+static int add_tcp_relay_instance_onion(TCP_Connections *_Nonnull tcp_c, const IP_Port *_Nonnull ip_port,
+        const uint8_t *_Nonnull relay_pk, const char *_Nonnull onion_domain)
+{
+    if (!net_family_is_onion(ip_port->ip.family)) {
+        return -1;
+    }
+
+    const int tcp_connections_number = create_tcp_connection(tcp_c);
+
+    if (tcp_connections_number == -1) {
+        return -1;
+    }
+
+    TCP_con *tcp_con = &tcp_c->tcp_connections[tcp_connections_number];
+
+    tcp_con->connection = new_tcp_connection(
+                              tcp_c->logger, tcp_c->mem, tcp_c->mono_time, tcp_c->rng, tcp_c->ns, ip_port,
+                              relay_pk, tcp_c->self_public_key, tcp_c->self_secret_key, &tcp_c->proxy_info, tcp_c->net_profile, onion_domain);
 
     if (tcp_con->connection == nullptr) {
         return -1;
@@ -1309,6 +1344,29 @@ int add_tcp_relay_global(TCP_Connections *tcp_c, const IP_Port *ip_port, const u
     }
 
     if (add_tcp_relay_instance(tcp_c, ip_port, relay_pk) == -1) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/** @brief Add a TCP relay for an onion domain.
+ *
+ * Like add_tcp_relay_global() but for onion addresses.
+ *
+ * return 0 on success.
+ * return -1 on failure.
+ */
+int add_tcp_relay_global_onion(TCP_Connections *_Nonnull tcp_c, const IP_Port *_Nonnull ip_port,
+                               const uint8_t *_Nonnull relay_pk, const char *_Nonnull onion_domain)
+{
+    const int tcp_connections_number = find_tcp_connection_relay(tcp_c, relay_pk);
+
+    if (tcp_connections_number != -1) {
+        return -1;
+    }
+
+    if (add_tcp_relay_instance_onion(tcp_c, ip_port, relay_pk, onion_domain) == -1) {
         return -1;
     }
 
@@ -1431,6 +1489,10 @@ static bool copy_tcp_relay_conn(const TCP_Connections *_Nonnull tcp_c, Node_form
     tcp_relay->ip_port = tcp_con_ip_port(tcp_con->connection);
 
     Family *const family = &tcp_relay->ip_port.ip.family;
+
+    if (net_family_is_onion(*family)) {
+        return false;
+    }
 
     if (net_family_is_ipv4(*family)) {
         *family = net_family_tcp_ipv4();

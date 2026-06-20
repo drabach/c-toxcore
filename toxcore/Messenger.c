@@ -3539,7 +3539,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
     if (options->tcp_server_port != 0) {
         m->tcp_server = new_tcp_server(m->log, m->mem, m->rng, m->ns, options->ipv6enabled, 1,
                                        &options->tcp_server_port, dht_get_self_secret_key(m->dht),
-                                       m->onion, m->forwarding);
+                                       m->onion, m->forwarding, nullptr);
 
         if (m->tcp_server == nullptr) {
             LOGGER_WARNING(m->log, "TCP server initialisation failed");

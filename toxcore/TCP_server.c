@@ -895,7 +895,7 @@ static int accept_connection(TCP_Server *_Nonnull tcp_server, Socket sock)
     return index;
 }
 
-static Socket new_listening_tcp_socket(const Logger *_Nonnull logger, const Memory *_Nonnull mem, const Network *_Nonnull ns, Family family, uint16_t port)
+static Socket new_listening_tcp_socket(const Logger *_Nonnull logger, const Memory *_Nonnull mem, const Network *_Nonnull ns, Family family, uint16_t port, const IP *_Nullable bind_ip)
 {
     const Socket sock = net_socket(ns, family, TOX_SOCK_STREAM, TOX_PROTO_TCP);
 
@@ -914,7 +914,7 @@ static Socket new_listening_tcp_socket(const Logger *_Nonnull logger, const Memo
         ok = set_socket_reuseaddr(ns, sock);
     }
 
-    ok = ok && bind_to_port(ns, sock, family, port) && (net_listen(ns, sock, TCP_MAX_BACKLOG) == 0);
+    ok = ok && bind_to_port(ns, sock, family, port, bind_ip) && (net_listen(ns, sock, TCP_MAX_BACKLOG) == 0);
 
     if (!ok) {
         Net_Strerror error_str;
@@ -930,7 +930,8 @@ static Socket new_listening_tcp_socket(const Logger *_Nonnull logger, const Memo
 
 TCP_Server *new_tcp_server(const Logger *logger, const Memory *mem, const Random *rng, const Network *ns,
                            bool ipv6_enabled, uint16_t num_sockets,
-                           const uint16_t *ports, const uint8_t *secret_key, Onion *onion, Forwarding *forwarding)
+                           const uint16_t *ports, const uint8_t *secret_key, Onion *onion, Forwarding *forwarding,
+                           const IP *bind_ip)
 {
     if (num_sockets == 0 || ports == nullptr) {
         LOGGER_ERROR(logger, "no sockets");
@@ -989,7 +990,7 @@ TCP_Server *new_tcp_server(const Logger *logger, const Memory *mem, const Random
     const Family family = ipv6_enabled ? net_family_ipv6() : net_family_ipv4();
 
     for (uint32_t i = 0; i < num_sockets; ++i) {
-        const Socket sock = new_listening_tcp_socket(logger, mem, ns, family, ports[i]);
+        const Socket sock = new_listening_tcp_socket(logger, mem, ns, family, ports[i], bind_ip);
 
         if (!sock_valid(sock)) {
             continue;

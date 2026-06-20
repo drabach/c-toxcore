@@ -257,6 +257,7 @@ static int make_family(Family tox_family)
     switch (tox_family.value) {
         case TOX_AF_INET:
         case TCP_INET:
+        case TOX_AF_ONION:
             return AF_INET;
 
         case TOX_AF_INET6:
@@ -280,6 +281,7 @@ static const Family family_tcp_ipv4 = {TCP_INET};
 static const Family family_tcp_ipv6 = {TCP_INET6};
 static const Family family_tox_tcp_ipv4 = {TOX_TCP_INET};
 static const Family family_tox_tcp_ipv6 = {TOX_TCP_INET6};
+static const Family family_onion = {TOX_AF_ONION};
 
 static const Family *make_tox_family(int family)
 {
@@ -463,6 +465,33 @@ bool net_family_is_tox_tcp_ipv4(Family family)
 bool net_family_is_tox_tcp_ipv6(Family family)
 {
     return family.value == family_tox_tcp_ipv6.value;
+}
+
+Family net_family_onion(void)
+{
+    return family_onion;
+}
+
+bool net_family_is_onion(Family family)
+{
+    return family.value == family_onion.value;
+}
+
+bool net_is_onion(const char *host)
+{
+    if (host == nullptr) {
+        return false;
+    }
+    const size_t len = strlen(host);
+    if (len < 7) {
+        return false;
+    }
+    return host[len - 6] == '.' &&
+           host[len - 5] == 'o' &&
+           host[len - 4] == 'n' &&
+           host[len - 3] == 'i' &&
+           host[len - 2] == 'o' &&
+           host[len - 1] == 'n';
 }
 
 bool sock_valid(Socket sock)
@@ -2194,7 +2223,7 @@ void net_freeipport(const Memory *mem, IP_Port *ip_ports)
     mem_delete(mem, ip_ports);
 }
 
-bool bind_to_port(const Network *ns, Socket sock, Family family, uint16_t port)
+bool bind_to_port(const Network *ns, Socket sock, Family family, uint16_t port, const IP *bind_ip)
 {
     Network_Addr addr = {{0}};
 
@@ -2204,12 +2233,20 @@ bool bind_to_port(const Network *ns, Socket sock, Family family, uint16_t port)
         addr.size = sizeof(struct sockaddr_in);
         addr4->sin_family = AF_INET;
         addr4->sin_port = net_htons(port);
+
+        if (bind_ip != nullptr && bind_ip->family.value == net_family_ipv4().value) {
+            addr4->sin_addr.s_addr = bind_ip->ip.v4.uint32;
+        }
     } else if (net_family_is_ipv6(family)) {
         struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&addr.addr;
 
         addr.size = sizeof(struct sockaddr_in6);
         addr6->sin6_family = AF_INET6;
         addr6->sin6_port = net_htons(port);
+
+        if (bind_ip != nullptr && bind_ip->family.value == net_family_ipv6().value) {
+            memcpy(&addr6->sin6_addr, &bind_ip->ip.v6, sizeof(bind_ip->ip.v6));
+        }
     } else {
         return false;
     }
