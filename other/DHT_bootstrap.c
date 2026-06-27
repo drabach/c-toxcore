@@ -14,7 +14,7 @@
 #include <string.h>
 
 #include "../toxcore/DHT.h"
-#include "../toxcore/LAN_discovery.h"
+#include "../toxcore/tor_transport.h"
 #include "../toxcore/ccompat.h"
 #include "../toxcore/crypto_core.h"
 #include "../toxcore/forwarding.h"
@@ -157,14 +157,26 @@ int main(int argc, char *argv[])
     Mono_Time *mono_time = mono_time_new(mem, nullptr, nullptr);
     const uint16_t start_port = PORT;
     const uint16_t end_port = start_port + (TOX_PORTRANGE_TO - TOX_PORTRANGE_FROM);
-    DHT *dht = new_dht(logger, mem, rng, ns, mono_time, new_networking_ex(logger, mem, ns, &ip, start_port, end_port, nullptr), true, true);
+    Tor_Transport_Config tor_cfg;
+    memset(&tor_cfg, 0, sizeof(tor_cfg));
+    snprintf(tor_cfg.proxy_host, sizeof(tor_cfg.proxy_host), "127.0.0.1");
+    tor_cfg.proxy_port = 9050;
+
+    Tor_Transport *tran = tor_transport_new(logger, mem, mono_time, rng, ns, &tor_cfg);
+
+    if (tran == nullptr) {
+        printf("Failed to create Tor transport.\n");
+        return 1;
+    }
+
+    DHT *dht = new_dht(logger, mem, rng, ns, mono_time, tran);
     Onion *onion = new_onion(logger, mem, mono_time, rng, dht);
     Forwarding *forwarding = new_forwarding(logger, mem, rng, mono_time, dht);
     GC_Announces_List *gc_announces_list = new_gca_list(mem);
     Onion_Announce *onion_a = new_onion_announce(logger, mem, rng, mono_time, dht);
 
 #ifdef DHT_NODE_EXTRA_PACKETS
-    bootstrap_set_callbacks(dht_get_net(dht), (uint32_t)DAEMON_VERSION_NUMBER, (const uint8_t *) motd_str, strlen(motd_str) + 1);
+    bootstrap_set_callbacks(dht_get_transport(dht), (uint32_t)DAEMON_VERSION_NUMBER, (const uint8_t *) motd_str, strlen(motd_str) + 1);
 #endif
 
     if (onion == nullptr || forwarding == nullptr || onion_a == nullptr) {
@@ -214,7 +226,7 @@ int main(int argc, char *argv[])
     fclose(file);
 
     printf("\n");
-    printf("Port: %u\n", net_ntohs(net_port(dht_get_net(dht))));
+
 
     if (argc > argvoffset + 3) {
         printf("Trying to bootstrap into the network...\n");
@@ -244,9 +256,6 @@ int main(int argc, char *argv[])
 
     bool is_waiting_for_dht_connection = true;
 
-    uint64_t last_lan_discovery = 0;
-    const Broadcast_Info *broadcast = lan_discovery_init(mem, ns);
-
     while (true) {
         mono_time_update(mono_time);
 
@@ -257,17 +266,12 @@ int main(int argc, char *argv[])
 
         do_dht(dht);
 
-        if (mono_time_is_timeout(mono_time, last_lan_discovery, is_waiting_for_dht_connection ? 5 : LAN_DISCOVERY_INTERVAL)) {
-            lan_discovery_send(dht_get_net(dht), broadcast, dht_get_self_public_key(dht), net_htons(PORT));
-            last_lan_discovery = mono_time_get(mono_time);
-        }
-
         do_gca(mono_time, gc_announces_list);
 
 #ifdef TCP_RELAY_ENABLED
         do_tcp_server(tcp_s, mono_time);
 #endif
-        networking_poll(dht_get_net(dht), nullptr);
+        tor_transport_iterate(dht_get_transport(dht), nullptr);
 
         c_sleep(1);
     }

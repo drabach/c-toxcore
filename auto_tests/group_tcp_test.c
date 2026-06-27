@@ -240,8 +240,6 @@ int main(int argc, char **argv)
     struct Tox_Options *options = tox_options_new(nullptr);
     ck_assert(options != nullptr);
 
-    tox_options_set_udp_enabled(options, false);
-
     Run_Auto_Options autotest_opts = default_run_auto_options();
     autotest_opts.graph = GRAPH_COMPLETE;
 

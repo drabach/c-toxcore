@@ -26,14 +26,6 @@ void tox_options_set_ipv6_enabled(Tox_Options *options, bool ipv6_enabled)
 {
     options->ipv6_enabled = ipv6_enabled;
 }
-bool tox_options_get_udp_enabled(const Tox_Options *options)
-{
-    return options->udp_enabled;
-}
-void tox_options_set_udp_enabled(Tox_Options *options, bool udp_enabled)
-{
-    options->udp_enabled = udp_enabled;
-}
 Tox_Proxy_Type tox_options_get_proxy_type(const Tox_Options *options)
 {
     return options->proxy_type;
@@ -107,14 +99,6 @@ void tox_options_set_tcp_port(Tox_Options *options, uint16_t tcp_port)
 {
     options->tcp_port = tcp_port;
 }
-bool tox_options_get_hole_punching_enabled(const Tox_Options *options)
-{
-    return options->hole_punching_enabled;
-}
-void tox_options_set_hole_punching_enabled(Tox_Options *options, bool hole_punching_enabled)
-{
-    options->hole_punching_enabled = hole_punching_enabled;
-}
 Tox_Savedata_Type tox_options_get_savedata_type(const Tox_Options *options)
 {
     return options->savedata_type;
@@ -146,14 +130,6 @@ void *tox_options_get_log_user_data(const Tox_Options *options)
 void tox_options_set_log_user_data(Tox_Options *options, void *log_user_data)
 {
     options->log_user_data = log_user_data;
-}
-bool tox_options_get_local_discovery_enabled(const Tox_Options *options)
-{
-    return options->local_discovery_enabled;
-}
-void tox_options_set_local_discovery_enabled(Tox_Options *options, bool local_discovery_enabled)
-{
-    options->local_discovery_enabled = local_discovery_enabled;
 }
 bool tox_options_get_dht_announcements_enabled(const Tox_Options *options)
 {
@@ -248,10 +224,7 @@ void tox_options_default(Tox_Options *options)
         const Tox_Options default_options = {false};
         *options = default_options;
         tox_options_set_ipv6_enabled(options, true);
-        tox_options_set_udp_enabled(options, true);
         tox_options_set_proxy_type(options, TOX_PROXY_TYPE_NONE);
-        tox_options_set_hole_punching_enabled(options, true);
-        tox_options_set_local_discovery_enabled(options, true);
         tox_options_set_dht_announcements_enabled(options, true);
         tox_options_set_experimental_thread_safety(options, false);
         tox_options_set_experimental_groups_persistence(options, false);

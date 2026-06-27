@@ -71,13 +71,10 @@ typedef struct Messenger_State_Plugin {
 
 typedef struct Messenger_Options {
     bool ipv6enabled;
-    bool udp_disabled;
     TCP_Proxy_Info proxy_info;
     uint16_t port_range[2];
     uint16_t tcp_server_port;
 
-    bool hole_punching_enabled;
-    bool local_discovery_enabled;
     bool dht_announcements_enabled;
     bool groups_persistence_enabled;
 
@@ -126,7 +123,6 @@ typedef enum Friend_Add_Error {
 typedef enum Connection_Status {
     CONNECTION_NONE,
     CONNECTION_TCP,
-    CONNECTION_UDP,
 } Connection_Status;
 
 /**
@@ -231,7 +227,7 @@ typedef struct Friend {
     uint32_t message_id; // a semi-unique id used in read receipts.
     uint32_t friendrequest_nospam; // The nospam number used in the friend request.
     uint64_t last_seen_time;
-    Connection_Status last_connection_udp_tcp;
+    Connection_Status last_connection;
     struct File_Transfers file_sending[MAX_CONCURRENT_FILE_PIPES];
     uint32_t num_sending_files;
     struct File_Transfers file_receiving[MAX_CONCURRENT_FILE_PIPES];
@@ -247,7 +243,7 @@ struct Messenger {
     const Random *_Nullable rng;
     const Network *_Nullable ns;
 
-    Networking_Core *_Nonnull net;
+    Tor_Transport *_Nonnull tran;
     Net_Crypto *_Nonnull net_crypto;
     Net_Profile *_Nullable tcp_np;
     DHT *_Nonnull dht;

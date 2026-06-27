@@ -161,8 +161,6 @@ static void test_few_clients(void)
 
     struct Tox_Options *opts2 = tox_options_new(nullptr);
     tox_options_set_ipv6_enabled(opts2, USE_IPV6);
-    tox_options_set_udp_enabled(opts2, false);
-    tox_options_set_local_discovery_enabled(opts2, false);
     Tox *tox2 = tox_new_log(opts2, &t_n_error, &index[1]);
     ck_assert_msg(t_n_error == TOX_ERR_NEW_OK, "Failed to create tox instance: %u", t_n_error);
     tox_events_init(tox2);
@@ -171,7 +169,6 @@ static void test_few_clients(void)
 
     struct Tox_Options *opts3 = tox_options_new(nullptr);
     tox_options_set_ipv6_enabled(opts3, USE_IPV6);
-    tox_options_set_local_discovery_enabled(opts3, false);
     Tox *tox3 = tox_new_log(opts3, &t_n_error, &index[2]);
     ck_assert_msg(t_n_error == TOX_ERR_NEW_OK, "Failed to create tox instance: %u", t_n_error);
 
@@ -186,14 +183,17 @@ static void test_few_clients(void)
 
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(tox1, dht_key);
-    const uint16_t dht_port = tox_self_get_udp_port(tox1, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(tox1, nullptr);
+
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
 
     printf("using tox1 as tcp relay for tox2\n");
-    tox_add_tcp_relay(tox2, TOX_LOCALHOST, TCP_RELAY_PORT, dht_key, nullptr);
+    tox_add_tcp_relay(tox2, TOX_LOCALHOST, tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(tox3, TOX_LOCALHOST, tcp_port, dht_key, nullptr);
 
     printf("bootstrapping toxes off tox1\n");
-    tox_bootstrap(tox2, "localhost", dht_port, dht_key, nullptr);
-    tox_bootstrap(tox3, "localhost", dht_port, dht_key, nullptr);
+    tox_bootstrap(tox2, "localhost", tcp_port, dht_key, nullptr);
+    tox_bootstrap(tox3, "localhost", tcp_port, dht_key, nullptr);
 
     connected_t1 = 0;
     tox_events_callback_self_connection_status(dispatch1, tox_connection_status);

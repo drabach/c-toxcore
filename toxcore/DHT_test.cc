@@ -17,6 +17,10 @@
 #include "network.h"
 #include "network_test_util.hh"
 #include "test_util.hh"
+#include "tor_transport.h"
+
+template <>
+struct Deleter<Tor_Transport> : Function_Deleter<Tor_Transport, tor_transport_kill> {};
 
 namespace {
 
@@ -339,9 +343,10 @@ TEST(AnnounceNodes, SetAndTest)
     ASSERT_NE(log, nullptr);
     Mono_Time *mono_time = mono_time_new(mem, nullptr, nullptr);
     ASSERT_NE(mono_time, nullptr);
-    Ptr<Networking_Core> net(new_networking_no_udp(log, mem, ns));
-    ASSERT_NE(net, nullptr);
-    Ptr<DHT> dht(new_dht(log, mem, rng, ns, mono_time, net.get(), true, true));
+    Tor_Transport_Config tran_cfg = {{{0}}};
+    Ptr<Tor_Transport> tran(tor_transport_new(log, mem, mono_time, rng, ns, &tran_cfg));
+    ASSERT_NE(tran, nullptr);
+    Ptr<DHT> dht(new_dht(log, mem, rng, ns, mono_time, tran.get()));
     ASSERT_NE(dht, nullptr);
 
     uint8_t pk_data[CRYPTO_PUBLIC_KEY_SIZE];
@@ -367,11 +372,11 @@ TEST(AnnounceNodes, SetAndTest)
 
     Node_format nodes[MAX_SENT_NODES];
     EXPECT_EQ(
-        0, get_close_nodes(dht.get(), self_pk.data(), nodes, net_family_unspec(), true, true));
+        0, get_close_nodes(dht.get(), self_pk.data(), nodes, true));
     set_announce_node(dht.get(), pk1.data());
     set_announce_node(dht.get(), pk2.data());
     EXPECT_EQ(
-        2, get_close_nodes(dht.get(), self_pk.data(), nodes, net_family_unspec(), true, true));
+        2, get_close_nodes(dht.get(), self_pk.data(), nodes, true));
 
     mono_time_free(mem, mono_time);
     logger_kill(log);

@@ -95,7 +95,7 @@ int create_data_request(const Memory *_Nonnull mem, const Random *_Nonnull rng, 
  * return -1 on failure.
  * return 0 on success.
  */
-int send_announce_request(const Logger *_Nonnull log, const Memory *_Nonnull mem, const Networking_Core *_Nonnull net, const Random *_Nonnull rng, const Onion_Path *_Nonnull path,
+int send_announce_request(const Logger *_Nonnull log, const Memory *_Nonnull mem, const Tor_Transport *_Nonnull tran, const Random *_Nonnull rng, const Onion_Path *_Nonnull path,
                           const Node_format *_Nonnull dest, const uint8_t *_Nonnull public_key, const uint8_t *_Nonnull secret_key, const uint8_t *_Nonnull ping_id, const uint8_t *_Nonnull client_id,
                           const uint8_t *_Nonnull data_public_key, uint64_t sendback_data);
 
@@ -115,7 +115,7 @@ int send_announce_request(const Logger *_Nonnull log, const Memory *_Nonnull mem
  * return -1 on failure.
  * return 0 on success.
  */
-int send_data_request(const Logger *_Nonnull log, const Memory *_Nonnull mem, const Networking_Core *_Nonnull net, const Random *_Nonnull rng, const Onion_Path *_Nonnull path,
+int send_data_request(const Logger *_Nonnull log, const Memory *_Nonnull mem, const Tor_Transport *_Nonnull tran, const Random *_Nonnull rng, const Onion_Path *_Nonnull path,
                       const IP_Port *_Nonnull dest, const uint8_t *_Nonnull public_key, const uint8_t *_Nonnull encrypt_public_key, const uint8_t *_Nonnull nonce, const uint8_t *_Nonnull data, uint16_t length);
 
 typedef int pack_extra_data_cb(void *_Nonnull object, const Logger *_Nonnull logger, const Memory *_Nonnull mem, const Mono_Time *_Nonnull mono_time,

@@ -144,7 +144,7 @@ void set_friend_request_callback(Friend_Connections *_Nonnull fr_c, fr_request_c
 
 /** Create new friend_connections instance. */
 Friend_Connections *_Nullable new_friend_connections(const Logger *_Nonnull logger, const Memory *_Nonnull mem, const Mono_Time *_Nonnull mono_time, const Network *_Nonnull ns,
-        Onion_Client *_Nonnull onion_c, bool local_discovery_enabled);
+        Onion_Client *_Nonnull onion_c);
 
 /** main friend_connections loop. */
 void do_friend_connections(Friend_Connections *_Nonnull fr_c, void *_Nonnull userdata);

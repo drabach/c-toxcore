@@ -709,18 +709,11 @@ static Tox *tox_new_system(const struct Tox_Options *_Nullable options, Tox_Err_
     }
 
     m_options.ipv6enabled = tox_options_get_ipv6_enabled(opts);
-    m_options.udp_disabled = !tox_options_get_udp_enabled(opts);
     m_options.port_range[0] = tox_options_get_start_port(opts);
     m_options.port_range[1] = tox_options_get_end_port(opts);
     m_options.tcp_server_port = tox_options_get_tcp_port(opts);
-    m_options.hole_punching_enabled = tox_options_get_hole_punching_enabled(opts);
-    m_options.local_discovery_enabled = tox_options_get_local_discovery_enabled(opts);
     m_options.dht_announcements_enabled = tox_options_get_dht_announcements_enabled(opts);
     m_options.groups_persistence_enabled = tox_options_get_experimental_groups_persistence(opts);
-
-    if (m_options.udp_disabled) {
-        m_options.local_discovery_enabled = false;
-    }
 
     Tox *tox = (Tox *)mem_alloc(sys->mem, sizeof(Tox));
 
@@ -1110,29 +1103,16 @@ bool tox_bootstrap(Tox *tox, const char *host, uint16_t port, const uint8_t publ
     tox_lock(tox);
     assert(count >= 0);
     bool onion_success = false;
-    // UDP bootstrap is default success if it's disabled (because we don't even try).
-    bool udp_success = tox->m->options.udp_disabled;
 
     for (int32_t i = 0; i < count; ++i) {
         if (!tox->m->options.ipv6enabled && net_family_is_ipv6(root[i].ip.family)) {
-            // We can't use ipv6 when it's disabled.
             continue;
         }
 
         root[i].port = net_htons(port);
 
         if (onion_add_bs_path_node(tox->m->onion_c, &root[i], public_key)) {
-            // If UDP is enabled, the caller cares about whether any of the
-            // bootstrap calls below will succeed. In TCP-only mode, adding
-            // onion path nodes successfully is sufficient.
             onion_success = true;
-        }
-
-        if (!tox->m->options.udp_disabled) {
-            if (dht_bootstrap(tox->m->dht, &root[i], public_key)) {
-                // If any of the bootstrap calls worked, we call it success.
-                udp_success = true;
-            }
         }
     }
 
@@ -1140,12 +1120,10 @@ bool tox_bootstrap(Tox *tox, const char *host, uint16_t port, const uint8_t publ
 
     net_freeipport(tox->sys.mem, root);
 
-    if (count == 0 || !onion_success || !udp_success) {
-        LOGGER_DEBUG(tox->m->log, "bootstrap node '%s' resolved to %d IP_Ports%s (onion: %s, UDP: %s)",
+    if (count == 0 || !onion_success) {
+        LOGGER_DEBUG(tox->m->log, "bootstrap node '%s' resolved to %d IP_Ports (onion: %s)",
                      host, count,
-                     count > 0 ? ", but failed to bootstrap with any of them" : "",
-                     onion_success ? "success" : "FAILURE",
-                     tox->m->options.udp_disabled ? "disabled" : (udp_success ? "success" : "FAILURE"));
+                     onion_success ? "success" : "FAILURE");
         SET_ERROR_PARAMETER(error, TOX_ERR_BOOTSTRAP_BAD_HOST);
         return false;
     }
@@ -1225,9 +1203,6 @@ Tox_Connection tox_self_get_connection_status(const Tox *tox)
 
         case ONION_CONNECTION_STATUS_TCP:
             return TOX_CONNECTION_TCP;
-
-        case ONION_CONNECTION_STATUS_UDP:
-            return TOX_CONNECTION_UDP;
     }
 
     LOGGER_FATAL(tox->m->log, "impossible return value: %u", ret);
@@ -2903,22 +2878,6 @@ void tox_self_get_dht_id(const Tox *tox, uint8_t dht_id[TOX_PUBLIC_KEY_SIZE])
         memcpy(dht_id, dht_get_self_public_key(tox->m->dht), CRYPTO_PUBLIC_KEY_SIZE);
         tox_unlock(tox);
     }
-}
-
-uint16_t tox_self_get_udp_port(const Tox *tox, Tox_Err_Get_Port *error)
-{
-    assert(tox != nullptr);
-    tox_lock(tox);
-    const uint16_t port = tox->m == nullptr || tox->m->net == nullptr ? 0 : net_htons(net_port(tox->m->net));
-    tox_unlock(tox);
-
-    if (port == 0) {
-        SET_ERROR_PARAMETER(error, TOX_ERR_GET_PORT_NOT_BOUND);
-        return 0;
-    }
-
-    SET_ERROR_PARAMETER(error, TOX_ERR_GET_PORT_OK);
-    return port;
 }
 
 uint16_t tox_self_get_tcp_port(const Tox *tox, Tox_Err_Get_Port *error)

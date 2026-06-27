@@ -49,11 +49,6 @@ static bool tox_connection_from_int(uint32_t value, Tox_Connection *_Nonnull out
             return true;
         }
 
-        case TOX_CONNECTION_UDP: {
-            *out_enum = TOX_CONNECTION_UDP;
-            return true;
-        }
-
         default: {
             *out_enum = TOX_CONNECTION_NONE;
             return false;

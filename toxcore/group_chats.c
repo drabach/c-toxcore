@@ -3546,7 +3546,7 @@ unsigned int gc_get_peer_connection_status(const GC_Chat *chat, GC_Peer_Id peer_
     const int peer_number = get_peer_number_of_peer_id(chat, peer_id);
 
     if (peer_number_is_self(peer_number)) {
-        return chat->self_udp_status ==  SELF_UDP_STATUS_NONE ? 1 : 2;
+        return 2;
     }
 
     const GC_Connection *gconn = get_gc_connection(chat, peer_number);
@@ -5520,26 +5520,16 @@ static bool send_gc_handshake_packet(const GC_Chat *_Nonnull chat, GC_Connection
         return false;
     }
 
-    const bool try_tcp_fallback = gconn->handshake_attempts % 2 == 1 && gconn->tcp_relays_count > 0;
     ++gconn->handshake_attempts;
 
-    int ret = -1;
-
-    if (!try_tcp_fallback && gcc_direct_conn_is_possible(chat, gconn)) {
-        ret = sendpacket(chat->net, &gconn->addr.ip_port, packet, (uint16_t)length);
-    }
-
-    if (ret != length && gconn->tcp_relays_count == 0) {
-        LOGGER_WARNING(chat->log, "UDP handshake failed and no TCP relays to fall back on");
+    if (gconn->tcp_relays_count == 0) {
+        LOGGER_WARNING(chat->log, "No TCP relays to send handshake through");
         return false;
     }
 
-    // Send a TCP handshake if UDP fails, or if UDP succeeded last time but we never got a response
-    if (gconn->tcp_relays_count > 0 && (ret != length || try_tcp_fallback)) {
-        if (send_packet_tcp_connection(chat->tcp_conn, gconn->tcp_connection_num, packet, (uint16_t)length) == -1) {
-            LOGGER_DEBUG(chat->log, "Send handshake packet failed. Type 0x%02x", request_type);
-            return false;
-        }
+    if (send_packet_tcp_connection(chat->tcp_conn, gconn->tcp_connection_num, packet, (uint16_t)length) == -1) {
+        LOGGER_DEBUG(chat->log, "Send handshake packet failed. Type 0x%02x", request_type);
+        return false;
     }
 
     if (gconn->is_pending_handshake_response) {
@@ -6358,25 +6348,26 @@ static int handle_gc_tcp_oob_packet(void *_Nonnull object, const uint8_t *_Nonnu
     return 0;
 }
 
-#define MIN_UDP_PACKET_SIZE (1 + ENC_PUBLIC_KEY_SIZE + CRYPTO_NONCE_SIZE + CRYPTO_MAC_SIZE)
-static int handle_gc_udp_packet(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                                void *_Nullable userdata)
+static void handle_gc_packet(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
+                             void *_Nullable userdata)
 {
     const Messenger *m = (Messenger *)object;
     if (m == nullptr) {
-        return -1;
+        return;
     }
 
-    if (length <= MIN_UDP_PACKET_SIZE) {
-        LOGGER_WARNING(m->log, "Got UDP packet with invalid length: %u (expected %u to %u)", length,
-                       (unsigned int)MIN_UDP_PACKET_SIZE, (unsigned int)(MAX_GC_PACKET_INCOMING_CHUNK_SIZE + MIN_UDP_PACKET_SIZE + ENC_PUBLIC_KEY_SIZE));
-        return -1;
+    const uint16_t min_packet_size = 1 + ENC_PUBLIC_KEY_SIZE + CRYPTO_NONCE_SIZE + CRYPTO_MAC_SIZE;
+
+    if (length <= min_packet_size) {
+        LOGGER_WARNING(m->log, "Got group packet with invalid length: %u (expected %u to %u)", length,
+                       (unsigned int)min_packet_size, (unsigned int)(MAX_GC_PACKET_INCOMING_CHUNK_SIZE + min_packet_size + ENC_PUBLIC_KEY_SIZE));
+        return;
     }
 
-    if (length > MAX_GC_PACKET_INCOMING_CHUNK_SIZE + MIN_UDP_PACKET_SIZE + ENC_PUBLIC_KEY_SIZE) {
-        LOGGER_WARNING(m->log, "Got UDP packet with invalid length: %u (expected %u to %u)", length,
-                       (unsigned int)MIN_UDP_PACKET_SIZE, (unsigned int)(MAX_GC_PACKET_INCOMING_CHUNK_SIZE + MIN_UDP_PACKET_SIZE + ENC_PUBLIC_KEY_SIZE));
-        return -1;
+    if (length > MAX_GC_PACKET_INCOMING_CHUNK_SIZE + min_packet_size + ENC_PUBLIC_KEY_SIZE) {
+        LOGGER_WARNING(m->log, "Got group packet with invalid length: %u (expected %u to %u)", length,
+                       (unsigned int)min_packet_size, (unsigned int)(MAX_GC_PACKET_INCOMING_CHUNK_SIZE + min_packet_size + ENC_PUBLIC_KEY_SIZE));
+        return;
     }
 
     const uint8_t packet_type = packet[0];
@@ -6392,47 +6383,44 @@ static int handle_gc_udp_packet(void *_Nonnull object, const IP_Port *_Nonnull s
     }
 
     if (chat == nullptr) {
-        return -1;
+        return;
     }
 
     if (!group_can_handle_packets(chat)) {
-        return -1;
+        return;
     }
 
     const uint8_t *payload = packet + 1 + ENC_PUBLIC_KEY_SIZE;
     uint16_t payload_len = length - 1 - ENC_PUBLIC_KEY_SIZE;
-    bool ret = false;
 
     switch (packet_type) {
         case NET_PACKET_GC_LOSSLESS: {
-            ret = handle_gc_lossless_packet(c, chat, sender_pk, payload, payload_len, true, userdata);
+            handle_gc_lossless_packet(c, chat, sender_pk, payload, payload_len, true, userdata);
             break;
         }
 
         case NET_PACKET_GC_LOSSY: {
-            ret = handle_gc_lossy_packet(c, chat, sender_pk, payload, payload_len, true, userdata);
+            handle_gc_lossy_packet(c, chat, sender_pk, payload, payload_len, true, userdata);
             break;
         }
 
         case NET_PACKET_GC_HANDSHAKE: {
             // handshake packets have an extra public key in plaintext header
             if (length <= 1 + ENC_PUBLIC_KEY_SIZE + ENC_PUBLIC_KEY_SIZE + CRYPTO_NONCE_SIZE + CRYPTO_MAC_SIZE) {
-                return -1;
+                return;
             }
 
             payload_len = payload_len - ENC_PUBLIC_KEY_SIZE;
             payload = payload + ENC_PUBLIC_KEY_SIZE;
 
-            ret = handle_gc_handshake_packet(chat, sender_pk, source, payload, payload_len, true, userdata) != -1;
+            handle_gc_handshake_packet(chat, sender_pk, source, payload, payload_len, true, userdata);
             break;
         }
 
         default: {
-            return -1;
+            return;
         }
     }
-
-    return ret ? 0 : -1;
 }
 
 void gc_callback_message(const Messenger *m, gc_message_cb *function)
@@ -6930,16 +6918,7 @@ static bool ping_peer(const GC_Chat *_Nonnull chat, GC_Connection *_Nonnull gcon
         LOGGER_FATAL(chat->log, "Packed length is impossible");
     }
 
-    if (chat->self_udp_status == SELF_UDP_STATUS_WAN && !gcc_conn_is_direct(chat->mono_time, gconn)
-            && mono_time_is_timeout(chat->mono_time, gconn->last_sent_ip_time, GC_SEND_IP_PORT_INTERVAL)) {
 
-        const int packed_ipp_len = pack_ip_port(chat->log, data + buf_size - sizeof(IP_Port), sizeof(IP_Port),
-                                                &chat->self_ip_port);
-
-        if (packed_ipp_len > 0) {
-            packed_len += packed_ipp_len;
-        }
-    }
 
     if (!send_lossy_group_packet(chat, gconn, data, packed_len, GP_PING)) {
         mem_delete(chat->mem, data);
@@ -7049,19 +7028,15 @@ static void do_self_connection(const GC_Session *_Nonnull c, GC_Chat *_Nonnull c
         return;
     }
 
-    const unsigned int self_udp_status = ipport_self_copy(c->messenger->dht, &chat->self_ip_port);
-    const bool udp_change = (chat->self_udp_status != self_udp_status) && (self_udp_status != SELF_UDP_STATUS_NONE);
-
-    // We flag a group announce if our UDP status has changed since last run, or if our last announced TCP
-    // relay is no longer valid. Additionally, we will always flag an announce in the specified interval
+    // We flag a group announce if our last announced TCP relay is no longer valid.
+    // Additionally, we will always flag an announce in the specified interval
     // regardless of the prior conditions. Private groups are never announced.
     if (is_public_chat(chat) &&
-            ((udp_change || !tcp_relay_is_valid(chat->tcp_conn, chat->announced_tcp_relay_pk))
+            (!tcp_relay_is_valid(chat->tcp_conn, chat->announced_tcp_relay_pk)
              || mono_time_is_timeout(chat->mono_time, chat->last_time_self_announce, GC_SELF_REFRESH_ANNOUNCE_INTERVAL))) {
         chat->update_self_announces = true;
     }
 
-    chat->self_udp_status = (Self_UDP_Status) self_udp_status;
     chat->last_self_announce_check = mono_time_get(chat->mono_time);
 }
 
@@ -7314,7 +7289,7 @@ static int create_new_group(const Memory *_Nonnull mem, GC_Session *_Nonnull c, 
     chat->group_number = group_number;
     chat->numpeers = 0;
     chat->connection_state = CS_CONNECTING;
-    chat->net = m->net;
+    chat->tran = m->tran;
     chat->mono_time = m->mono_time;
     chat->last_ping_interval = tm;
     chat->friend_connection_id = -1;
@@ -7447,7 +7422,7 @@ int gc_group_load(GC_Session *c, Bin_Unpack *bu)
 
     chat->group_number = group_number;
     chat->numpeers = 0;
-    chat->net = m->net;
+    chat->tran = m->tran;
     chat->mono_time = m->mono_time;
     chat->log = m->log;
     chat->mem = m->mem;
@@ -8072,9 +8047,9 @@ GC_Session *new_dht_groupchats(Messenger *m)
     c->announces_list = m->group_announce;
     c->tcp_np = m->tcp_np;
 
-    networking_registerhandler(m->net, NET_PACKET_GC_LOSSLESS, &handle_gc_udp_packet, m);
-    networking_registerhandler(m->net, NET_PACKET_GC_LOSSY, &handle_gc_udp_packet, m);
-    networking_registerhandler(m->net, NET_PACKET_GC_HANDSHAKE, &handle_gc_udp_packet, m);
+    tor_transport_register_handler(m->tran, NET_PACKET_GC_LOSSLESS, &handle_gc_packet, m);
+    tor_transport_register_handler(m->tran, NET_PACKET_GC_LOSSY, &handle_gc_packet, m);
+    tor_transport_register_handler(m->tran, NET_PACKET_GC_HANDSHAKE, &handle_gc_packet, m);
     onion_group_announce_register(m->onion_c, gc_handle_announce_response_callback, c);
 
     return c;
@@ -8166,9 +8141,9 @@ void kill_dht_groupchats(GC_Session *c)
         }
     }
 
-    networking_registerhandler(c->messenger->net, NET_PACKET_GC_LOSSY, nullptr, nullptr);
-    networking_registerhandler(c->messenger->net, NET_PACKET_GC_LOSSLESS, nullptr, nullptr);
-    networking_registerhandler(c->messenger->net, NET_PACKET_GC_HANDSHAKE, nullptr, nullptr);
+    tor_transport_register_handler(c->messenger->tran, NET_PACKET_GC_LOSSY, nullptr, nullptr);
+    tor_transport_register_handler(c->messenger->tran, NET_PACKET_GC_LOSSLESS, nullptr, nullptr);
+    tor_transport_register_handler(c->messenger->tran, NET_PACKET_GC_HANDSHAKE, nullptr, nullptr);
     onion_group_announce_register(c->messenger->onion_c, nullptr, nullptr);
 
     mem_delete(c->messenger->mem, c->chats);

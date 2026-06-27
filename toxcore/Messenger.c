@@ -508,7 +508,7 @@ int m_get_friend_connectionstatus(const Messenger *m, int32_t friendnumber)
     }
 
     if (direct_connected) {
-        return CONNECTION_UDP;
+        return CONNECTION_TCP;
     }
 
     if (num_online_relays != 0) {
@@ -519,7 +519,7 @@ int m_get_friend_connectionstatus(const Messenger *m, int32_t friendnumber)
      * we leave the connection status unchanged until the friend connection is either
      * established or dropped.
      */
-    return m->friendlist[friendnumber].last_connection_udp_tcp;
+    return m->friendlist[friendnumber].last_connection;
 }
 
 /**
@@ -1001,22 +1001,22 @@ void m_callback_core_connection(Messenger *m, m_self_connection_status_cb *funct
     m->core_connection_change = function;
 }
 
-static void check_friend_tcp_udp(Messenger *_Nonnull m, int32_t friendnumber, void *_Nullable userdata)
+static void check_friend_connection(Messenger *_Nonnull m, int32_t friendnumber, void *_Nullable userdata)
 {
-    const int last_connection_udp_tcp = m->friendlist[friendnumber].last_connection_udp_tcp;
+    const int last_connection_val = m->friendlist[friendnumber].last_connection;
     const int ret = m_get_friend_connectionstatus(m, friendnumber);
 
     if (ret == -1) {
         return;
     }
 
-    if (last_connection_udp_tcp != ret) {
+    if (last_connection_val != ret) {
         if (m->friend_connectionstatuschange != nullptr) {
             m->friend_connectionstatuschange(m, friendnumber, ret, userdata);
         }
     }
 
-    m->friendlist[friendnumber].last_connection_udp_tcp = (Connection_Status)ret;
+    m->friendlist[friendnumber].last_connection = (Connection_Status)ret;
 }
 
 static void break_files(const Messenger *_Nonnull m, int32_t friendnumber);
@@ -1043,7 +1043,7 @@ static void check_friend_connectionstatus(Messenger *_Nonnull m, int32_t friendn
 
         m->friendlist[friendnumber].status = status;
 
-        check_friend_tcp_udp(m, friendnumber, userdata);
+        check_friend_connection(m, friendnumber, userdata);
     }
 }
 
@@ -2354,7 +2354,7 @@ static void do_friends(Messenger *_Nonnull m, void *_Nullable userdata)
                 }
             }
 
-            check_friend_tcp_udp(m, i, userdata);
+            check_friend_connection(m, i, userdata);
             do_receipts(m, i, userdata);
             do_reqchunk_filecb(m, i, userdata);
 
@@ -2425,21 +2425,16 @@ static bool self_announce_group(const Messenger *_Nonnull m, GC_Chat *_Nonnull c
 {
     GC_Public_Announce announce = {{{{{0}}}}};
 
-    const bool ip_port_is_set = chat->self_udp_status != SELF_UDP_STATUS_NONE;
     const int tcp_num = tcp_copy_connected_relays(chat->tcp_conn, announce.base_announce.tcp_relays,
                         GCA_MAX_ANNOUNCED_TCP_RELAYS);
 
-    if (tcp_num == 0 && !ip_port_is_set) {
+    if (tcp_num == 0) {
         onion_friend_set_gc_data(onion_friend, nullptr, 0);
         return false;
     }
 
     announce.base_announce.tcp_relays_count = (uint8_t)tcp_num;
-    announce.base_announce.ip_port_is_set = ip_port_is_set;
-
-    if (ip_port_is_set) {
-        memcpy(&announce.base_announce.ip_port, &chat->self_ip_port, sizeof(IP_Port));
-    }
+    announce.base_announce.ip_port_is_set = false;
 
     memcpy(announce.base_announce.peer_public_key, chat->self_public_key.enc, ENC_PUBLIC_KEY_SIZE);
     memcpy(announce.chat_public_key, get_chat_id(&chat->chat_public_key), ENC_PUBLIC_KEY_SIZE);
@@ -2467,8 +2462,7 @@ static bool self_announce_group(const Messenger *_Nonnull m, GC_Chat *_Nonnull c
         memzero(chat->announced_tcp_relay_pk, sizeof(chat->announced_tcp_relay_pk));
     }
 
-    LOGGER_DEBUG(chat->log, "Published group announce. TCP relays: %d, UDP status: %u", tcp_num,
-                 chat->self_udp_status);
+    LOGGER_DEBUG(chat->log, "Published group announce. TCP relays: %d", tcp_num);
     return true;
 }
 
@@ -2518,10 +2512,8 @@ void do_messenger(Messenger *m, void *userdata)
         }
     }
 
-    if (!m->options.udp_disabled) {
-        networking_poll(m->net, userdata);
-        do_dht(m->dht);
-    }
+    tor_transport_iterate(m->tran, userdata);
+    do_dht(m->dht);
 
     if (m->tcp_server != nullptr) {
         do_tcp_server(m->tcp_server, m->mono_time);
@@ -2542,25 +2534,20 @@ void do_messenger(Messenger *m, void *userdata)
 
         for (uint32_t client = 0; client < LCLIENT_LIST; ++client) {
             const Client_data *cptr = dht_get_close_client(m->dht, client);
-            const IPPTsPng *const assocs[] = { &cptr->assoc4, &cptr->assoc6, nullptr };
 
-            for (const IPPTsPng * const *it = assocs; *it != nullptr; ++it) {
-                const IPPTsPng *const assoc = *it;
+            if (ip_isset(&cptr->ip_port.ip)) {
+                last_pinged = m->lastdump - cptr->last_pinged;
 
-                if (ip_isset(&assoc->ip_port.ip)) {
-                    last_pinged = m->lastdump - assoc->last_pinged;
-
-                    if (last_pinged > 999) {
-                        last_pinged = 999;
-                    }
-
-                    Ip_Ntoa ip_str;
-                    char id_str[IDSTRING_LEN];
-                    LOGGER_TRACE(m->log, "C[%2u] %s:%u [%3u] %s",
-                                 client, net_ip_ntoa(&assoc->ip_port.ip, &ip_str),
-                                 net_ntohs(assoc->ip_port.port), last_pinged,
-                                 id_to_string(cptr->public_key, id_str, sizeof(id_str)));
+                if (last_pinged > 999) {
+                    last_pinged = 999;
                 }
+
+                Ip_Ntoa ip_str;
+                char id_str[IDSTRING_LEN];
+                LOGGER_TRACE(m->log, "C[%2u] %s:%u [%3u] %s",
+                             client, net_ip_ntoa(&cptr->ip_port.ip, &ip_str),
+                             net_ntohs(cptr->ip_port.port), last_pinged,
+                             id_to_string(cptr->public_key, id_str, sizeof(id_str)));
             }
         }
 
@@ -2614,25 +2601,20 @@ void do_messenger(Messenger *m, void *userdata)
 
             for (uint32_t client = 0; client < MAX_FRIEND_CLIENTS; ++client) {
                 const Client_data *cptr = dht_friend_client(dhtfptr, client);
-                const IPPTsPng *const assocs[] = {&cptr->assoc4, &cptr->assoc6};
 
-                for (size_t a = 0; a < sizeof(assocs) / sizeof(assocs[0]); ++a) {
-                    const IPPTsPng *const assoc = assocs[a];
+                if (ip_isset(&cptr->ip_port.ip)) {
+                    last_pinged = m->lastdump - cptr->last_pinged;
 
-                    if (ip_isset(&assoc->ip_port.ip)) {
-                        last_pinged = m->lastdump - assoc->last_pinged;
-
-                        if (last_pinged > 999) {
-                            last_pinged = 999;
-                        }
-
-                        Ip_Ntoa ip_str;
-                        char id_str[IDSTRING_LEN];
-                        LOGGER_TRACE(m->log, "F[%2u] => C[%2u] %s:%u [%3u] %s",
-                                     friend_idx, client, net_ip_ntoa(&assoc->ip_port.ip, &ip_str),
-                                     net_ntohs(assoc->ip_port.port), last_pinged,
-                                     id_to_string(cptr->public_key, id_str, sizeof(id_str)));
+                    if (last_pinged > 999) {
+                        last_pinged = 999;
                     }
+
+                    Ip_Ntoa ip_str;
+                    char id_str[IDSTRING_LEN];
+                    LOGGER_TRACE(m->log, "F[%2u] => C[%2u] %s:%u [%3u] %s",
+                                 friend_idx, client, net_ip_ntoa(&cptr->ip_port.ip, &ip_str),
+                                 net_ntohs(cptr->ip_port.port), last_pinged,
+                                 id_to_string(cptr->public_key, id_str, sizeof(id_str)));
                 }
             }
         }
@@ -3394,37 +3376,33 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
 
     unsigned int net_err = 0;
 
-    if (!options->udp_disabled && options->proxy_info.proxy_type != TCP_PROXY_NONE) {
-        // We don't currently support UDP over proxy.
-        LOGGER_INFO(m->log, "UDP enabled and proxy set: disabling UDP");
-        options->udp_disabled = true;
-    }
+    Tor_Transport_Config tor_cfg;
+    memset(&tor_cfg, 0, sizeof(tor_cfg));
 
-    if (options->udp_disabled) {
-        m->net = new_networking_no_udp(m->log, m->mem, m->ns);
+    if (options->proxy_info.proxy_type != TCP_PROXY_NONE) {
+        Ip_Ntoa ip_str;
+        net_ip_ntoa(&options->proxy_info.ip_port.ip, &ip_str);
+        snprintf(tor_cfg.proxy_host, sizeof(tor_cfg.proxy_host), "%s", ip_str.buf);
+        tor_cfg.proxy_port = net_ntohs(options->proxy_info.ip_port.port);
     } else {
-        IP ip;
-        ip_init(&ip, options->ipv6enabled);
-        m->net = new_networking_ex(m->log, m->mem, m->ns, &ip, options->port_range[0], options->port_range[1], &net_err);
+        /* Default to localhost Tor SOCKS5 proxy */
+        snprintf(tor_cfg.proxy_host, sizeof(tor_cfg.proxy_host), "127.0.0.1");
+        tor_cfg.proxy_port = 9050;
     }
 
-    if (m->net == nullptr) {
+    m->tran = tor_transport_new(m->log, m->mem, m->mono_time, m->rng, m->ns, &tor_cfg);
+
+    if (m->tran == nullptr) {
         friendreq_kill(m->fr);
-
-        if (error != nullptr && net_err == 1) {
-            LOGGER_WARNING(m->log, "network initialisation failed (no ports available)");
-            *error = MESSENGER_ERROR_PORT;
-        }
-
         logger_kill(m->log);
         mem_delete(mem, m);
         return nullptr;
     }
 
-    m->dht = new_dht(m->log, m->mem, m->rng, m->ns, m->mono_time, m->net, options->hole_punching_enabled, options->local_discovery_enabled);
+    m->dht = new_dht(m->log, m->mem, m->rng, m->ns, m->mono_time, m->tran);
 
     if (m->dht == nullptr) {
-        kill_networking(m->net);
+        tor_transport_kill(m->tran);
         friendreq_kill(m->fr);
         logger_kill(m->log);
         mem_delete(mem, m);
@@ -3436,7 +3414,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
     if (m->tcp_np == nullptr) {
         LOGGER_WARNING(m->log, "TCP netprof initialisation failed");
         kill_dht(m->dht);
-        kill_networking(m->net);
+        tor_transport_kill(m->tran);
         friendreq_kill(m->fr);
         logger_kill(m->log);
         mem_delete(mem, m);
@@ -3450,7 +3428,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
 
         netprof_kill(mem, m->tcp_np);
         kill_dht(m->dht);
-        kill_networking(m->net);
+        tor_transport_kill(m->tran);
         friendreq_kill(m->fr);
         logger_kill(m->log);
         mem_delete(mem, m);
@@ -3465,7 +3443,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
         kill_net_crypto(m->net_crypto);
         netprof_kill(mem, m->tcp_np);
         kill_dht(m->dht);
-        kill_networking(m->net);
+        tor_transport_kill(m->tran);
         friendreq_kill(m->fr);
         logger_kill(m->log);
         mem_delete(mem, m);
@@ -3488,7 +3466,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
     m->onion_a = new_onion_announce(m->log, m->mem, m->rng, m->mono_time, m->dht);
     m->onion_c = new_onion_client(m->log, m->mem, m->rng, m->mono_time, m->net_crypto);
     if (m->onion_c != nullptr) {
-        m->fr_c = new_friend_connections(m->log, m->mem, m->mono_time, m->ns, m->onion_c, options->local_discovery_enabled);
+        m->fr_c = new_friend_connections(m->log, m->mem, m->mono_time, m->ns, m->onion_c);
     }
 
     if ((options->dht_announcements_enabled && (m->forwarding == nullptr || m->announce == nullptr)) ||
@@ -3505,7 +3483,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
         kill_net_crypto(m->net_crypto);
         netprof_kill(mem, m->tcp_np);
         kill_dht(m->dht);
-        kill_networking(m->net);
+        tor_transport_kill(m->tran);
         friendreq_kill(m->fr);
         logger_kill(m->log);
         mem_delete(mem, m);
@@ -3529,7 +3507,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
         kill_net_crypto(m->net_crypto);
         netprof_kill(mem, m->tcp_np);
         kill_dht(m->dht);
-        kill_networking(m->net);
+        tor_transport_kill(m->tran);
         friendreq_kill(m->fr);
         logger_kill(m->log);
         mem_delete(mem, m);
@@ -3555,7 +3533,7 @@ Messenger *new_messenger(Mono_Time *mono_time, const Memory *mem, const Random *
             kill_net_crypto(m->net_crypto);
             netprof_kill(mem, m->tcp_np);
             kill_dht(m->dht);
-            kill_networking(m->net);
+            tor_transport_kill(m->tran);
             friendreq_kill(m->fr);
             logger_kill(m->log);
             mem_delete(mem, m);
@@ -3611,7 +3589,7 @@ void kill_messenger(Messenger *m)
     kill_net_crypto(m->net_crypto);
     netprof_kill(m->mem, m->tcp_np);
     kill_dht(m->dht);
-    kill_networking(m->net);
+    tor_transport_kill(m->tran);
 
     for (uint32_t i = 0; i < m->numfriends; ++i) {
         clear_receipts(m, i);

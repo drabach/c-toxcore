@@ -201,10 +201,8 @@ void kill_onion_client(Onion_Client *_Nullable onion_c);
 typedef enum Onion_Connection_Status {
     /** We are not connected to the network. */
     ONION_CONNECTION_STATUS_NONE = 0,
-    /** We are connected with TCP only. */
+    /** We are connected. */
     ONION_CONNECTION_STATUS_TCP = 1,
-    /** We are also connected with UDP. */
-    ONION_CONNECTION_STATUS_UDP = 2,
 } Onion_Connection_Status;
 
 Onion_Connection_Status onion_connection_status(const Onion_Client *_Nonnull onion_c);

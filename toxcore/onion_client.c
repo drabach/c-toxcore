@@ -13,7 +13,6 @@
 #include <string.h>
 
 #include "DHT.h"
-#include "LAN_discovery.h"
 #include "TCP_connection.h"
 #include "attributes.h"
 #include "ccompat.h"
@@ -123,7 +122,7 @@ struct Onion_Client {
 
     DHT     *dht;
     Net_Crypto *c;
-    Networking_Core *net;
+    Tor_Transport *tran;
     Onion_Friend    *friends_list;
     uint16_t       num_friends;
 
@@ -157,7 +156,6 @@ struct Onion_Client {
     uint64_t last_populated;  // the last time we had a fully populated path nodes list
 
     unsigned int onion_connected;
-    bool udp_connected;
 
     onion_group_announce_cb *group_announce_response;
     void *group_announce_response_user_data;
@@ -522,43 +520,6 @@ static uint32_t set_path_timeouts(Onion_Client *_Nonnull onion_c, uint32_t num, 
     return -1;
 }
 
-/** @brief Function to send onion packet via TCP and UDP.
- *
- * return -1 on failure.
- * return 0 on success.
- */
-static int send_onion_packet_tcp_udp(const Onion_Client *_Nonnull onion_c, const Onion_Path *_Nonnull path, const IP_Port *_Nonnull dest, const uint8_t *_Nonnull data, uint16_t length)
-{
-    if (net_family_is_ipv4(path->ip_port1.ip.family) || net_family_is_ipv6(path->ip_port1.ip.family)) {
-        uint8_t packet[ONION_MAX_PACKET_SIZE];
-        const int len = create_onion_packet(onion_c->mem, onion_c->rng, packet, sizeof(packet), path, dest, data, length);
-
-        if (len == -1) {
-            return -1;
-        }
-
-        if (sendpacket(onion_c->net, &path->ip_port1, packet, len) != len) {
-            return -1;
-        }
-
-        return 0;
-    }
-
-    unsigned int tcp_connections_number;
-
-    if (ip_port_to_tcp_connections_number(&path->ip_port1, &tcp_connections_number)) {
-        uint8_t packet[ONION_MAX_PACKET_SIZE];
-        const int len = create_onion_packet_tcp(onion_c->mem, onion_c->rng, packet, sizeof(packet), path, dest, data, length);
-
-        if (len == -1) {
-            return -1;
-        }
-
-        return send_tcp_onion_request(onion_c->c, tcp_connections_number, packet, len);
-    }
-
-    return -1;
-}
 
 /** @brief Creates a sendback for use in an announce request.
  *
@@ -695,7 +656,18 @@ static int client_send_announce_request(Onion_Client *_Nonnull onion_c, uint32_t
     Ip_Ntoa ip_str;
     LOGGER_TRACE(onion_c->logger, "sending onion packet to %s:%d (%02x, %d bytes)",
                  net_ip_ntoa(&dest->ip, &ip_str), net_ntohs(dest->port), request[0], len);
-    return send_onion_packet_tcp_udp(onion_c, &path, dest, request, len);
+    uint8_t tcp_packet[ONION_MAX_PACKET_SIZE];
+    const int p_len = create_onion_packet(onion_c->mem, onion_c->rng, tcp_packet, sizeof(tcp_packet), &path, dest, request, len);
+
+    if (p_len == -1) {
+        return -1;
+    }
+
+    if (tor_transport_send(onion_c->tran, path.ip_port1.ip.ip.onion, path.ip_port1.port, nullptr, tcp_packet, p_len) != 1) {
+        return -1;
+    }
+
+    return 0;
 }
 
 typedef struct Onion_Node_Cmp {
@@ -925,14 +897,7 @@ static int client_ping_nodes(Onion_Client *_Nonnull onion_c, uint32_t num, const
         last_pinged_index = &onion_c->friends_list[num - 1].last_pinged_index;
     }
 
-    const bool lan_ips_accepted = ip_is_lan(&source->ip);
-
     for (uint32_t i = 0; i < num_nodes; ++i) {
-        if (!lan_ips_accepted) {
-            if (ip_is_lan(&nodes[i].ip_port.ip)) {
-                continue;
-            }
-        }
 
         if (onion_node_timed_out(&node_list[0], onion_c->mono_time)
                 || id_closest(reference_id, node_list[0].public_key, nodes[i].public_key) == 2
@@ -965,14 +930,14 @@ static bool handle_group_announce_response(Onion_Client *_Nonnull onion_c, uint3
     return onion_c->group_announce_response(onion_c, num, plain, plain_size, onion_c->group_announce_response_user_data);
 }
 
-static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                                    void *_Nullable userdata)
+static void handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
+                                     void *_Nullable userdata)
 {
     Onion_Client *onion_c = (Onion_Client *)object;
     if (length < ONION_ANNOUNCE_RESPONSE_MIN_SIZE || length > ONION_ANNOUNCE_RESPONSE_MAX_SIZE) {
         LOGGER_TRACE(onion_c->logger, "invalid announce response length: %u (min: %u, max: %u)",
                      length, (unsigned int)ONION_ANNOUNCE_RESPONSE_MIN_SIZE, (unsigned int)ONION_ANNOUNCE_RESPONSE_MAX_SIZE);
-        return 1;
+        return;
     }
 
     uint8_t public_key[CRYPTO_PUBLIC_KEY_SIZE];
@@ -981,7 +946,7 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
     const uint32_t num = check_sendback(onion_c, packet + 1, public_key, &ip_port, &path_num);
 
     if (num > onion_c->num_friends) {
-        return 1;
+        return;
     }
 
     uint8_t plain[1 + ONION_PING_ID_SIZE + ONION_ANNOUNCE_RESPONSE_MAX_SIZE - ONION_ANNOUNCE_RESPONSE_MIN_SIZE];
@@ -997,7 +962,7 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
     } else {
         if (!onion_c->friends_list[num - 1].is_valid) {
             LOGGER_TRACE(onion_c->logger, "friend number %lu is invalid", (unsigned long)(num - 1));
-            return 1;
+            return;
         }
 
         len = decrypt_data(onion_c->mem, public_key, onion_c->friends_list[num - 1].temp_secret_key,
@@ -1006,19 +971,19 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
 
     if (len < 0) {
         // This happens a lot, so don't log it.
-        return 1;
+        return;
     }
 
     if ((uint32_t)len != plain_size) {
         LOGGER_WARNING(onion_c->logger, "decrypted size (%lu) is not the expected plain text size (%lu)", (unsigned long)len, (unsigned long)plain_size);
-        return 1;
+        return;
     }
 
     const uint32_t path_used = set_path_timeouts(onion_c, num, path_num);
 
     if (client_add_to_list(onion_c, num, public_key, &ip_port, plain[0], plain + 1, path_used) == -1) {
         LOGGER_WARNING(onion_c->logger, "failed to add client to list");
-        return 1;
+        return;
     }
 
     uint16_t len_nodes = 0;
@@ -1026,7 +991,7 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
 
     if (nodes_count > 0) {
         if (nodes_count > MAX_SENT_NODES) {
-            return 1;
+            return;
         }
 
         Node_format nodes[MAX_SENT_NODES];
@@ -1035,12 +1000,12 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
 
         if (num_nodes < 0) {
             LOGGER_WARNING(onion_c->logger, "no nodes to unpack in onion response");
-            return 1;
+            return;
         }
 
         if (client_ping_nodes(onion_c, num, nodes, num_nodes, source) == -1) {
             LOGGER_WARNING(onion_c->logger, "pinging %d nodes failed", num_nodes);
-            return 1;
+            return;
         }
     }
 
@@ -1048,11 +1013,11 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
         const uint16_t offset = 2 + ONION_PING_ID_SIZE + len_nodes;
 
         if (plain_size < offset) {
-            return 1;
+            return;
         }
 
         if (!handle_group_announce_response(onion_c, num, plain + offset, plain_size - offset)) {
-            return 1;
+            return;
         }
     }
 
@@ -1060,19 +1025,17 @@ static int handle_announce_response(void *_Nonnull object, const IP_Port *_Nonnu
     onion_c->last_packet_recv = mono_time_get(onion_c->mono_time);
     LOGGER_TRACE(onion_c->logger, "onion has received a packet at %llu",
                  (unsigned long long)onion_c->last_packet_recv);
-
-    return 0;
 }
 
 /* TODO(jfreegman): DEPRECATE */
-static int handle_announce_response_old(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                                        void *_Nullable userdata)
+static void handle_announce_response_old(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
+                                         void *_Nullable userdata)
 {
     Onion_Client *onion_c = (Onion_Client *)object;
     if (length < ONION_ANNOUNCE_RESPONSE_MIN_SIZE || length > ONION_ANNOUNCE_RESPONSE_MAX_SIZE) {
         LOGGER_TRACE(onion_c->logger, "invalid announce response length: %u (min: %u, max: %u)",
                      length, (unsigned int)ONION_ANNOUNCE_RESPONSE_MIN_SIZE, (unsigned int)ONION_ANNOUNCE_RESPONSE_MAX_SIZE);
-        return 1;
+        return;
     }
 
     const uint16_t len_nodes = length - ONION_ANNOUNCE_RESPONSE_MIN_SIZE;
@@ -1083,7 +1046,7 @@ static int handle_announce_response_old(void *_Nonnull object, const IP_Port *_N
     const uint32_t num = check_sendback(onion_c, packet + 1, public_key, &ip_port, &path_num);
 
     if (num > onion_c->num_friends) {
-        return 1;
+        return;
     }
 
     const uint16_t plain_size = 1 + ONION_PING_ID_SIZE + len_nodes;
@@ -1099,7 +1062,7 @@ static int handle_announce_response_old(void *_Nonnull object, const IP_Port *_N
     } else {
         if (!onion_c->friends_list[num - 1].is_valid) {
             LOGGER_TRACE(onion_c->logger, "friend number %lu is invalid", (unsigned long)(num - 1));
-            return 1;
+            return;
         }
 
         len = decrypt_data(onion_c->mem, public_key, onion_c->friends_list[num - 1].temp_secret_key,
@@ -1108,19 +1071,19 @@ static int handle_announce_response_old(void *_Nonnull object, const IP_Port *_N
 
     if (len < 0) {
         // This happens a lot, so don't log it.
-        return 1;
+        return;
     }
 
     if ((uint32_t)len != plain_size) {
         LOGGER_WARNING(onion_c->logger, "decrypted size (%lu) is not the expected plain text size (%u)", (unsigned long)len, plain_size);
-        return 1;
+        return;
     }
 
     const uint32_t path_used = set_path_timeouts(onion_c, num, path_num);
 
     if (client_add_to_list(onion_c, num, public_key, &ip_port, plain[0], plain + 1, path_used) == -1) {
         LOGGER_WARNING(onion_c->logger, "failed to add client to list");
-        return 1;
+        return;
     }
 
     if (len_nodes != 0) {
@@ -1129,12 +1092,12 @@ static int handle_announce_response_old(void *_Nonnull object, const IP_Port *_N
 
         if (num_nodes <= 0) {
             LOGGER_WARNING(onion_c->logger, "no nodes to unpack in onion response");
-            return 1;
+            return;
         }
 
         if (client_ping_nodes(onion_c, num, nodes, num_nodes, source) == -1) {
             LOGGER_WARNING(onion_c->logger, "pinging %d nodes failed", num_nodes);
-            return 1;
+            return;
         }
     }
 
@@ -1142,22 +1105,20 @@ static int handle_announce_response_old(void *_Nonnull object, const IP_Port *_N
     onion_c->last_packet_recv = mono_time_get(onion_c->mono_time);
     LOGGER_TRACE(onion_c->logger, "onion has received a packet at %llu",
                  (unsigned long long)onion_c->last_packet_recv);
-
-    return 0;
 }
 
 #define DATA_IN_RESPONSE_MIN_SIZE ONION_DATA_IN_RESPONSE_MIN_SIZE
 
-static int handle_data_response(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
+static void handle_data_response(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
 {
     Onion_Client *onion_c = (Onion_Client *)object;
 
     if (length <= (ONION_DATA_RESPONSE_MIN_SIZE + DATA_IN_RESPONSE_MIN_SIZE)) {
-        return 1;
+        return;
     }
 
     if (length > MAX_DATA_REQUEST_SIZE) {
-        return 1;
+        return;
     }
 
     const uint16_t temp_plain_size = length - ONION_DATA_RESPONSE_MIN_SIZE;
@@ -1167,7 +1128,7 @@ static int handle_data_response(void *_Nonnull object, const IP_Port *_Nonnull s
                            length - (1 + CRYPTO_NONCE_SIZE + CRYPTO_PUBLIC_KEY_SIZE), temp_plain);
 
     if ((uint32_t)len != temp_plain_size) {
-        return 1;
+        return;
     }
 
     const uint16_t plain_size = temp_plain_size - DATA_IN_RESPONSE_MIN_SIZE;
@@ -1177,14 +1138,14 @@ static int handle_data_response(void *_Nonnull object, const IP_Port *_Nonnull s
                        temp_plain_size - CRYPTO_PUBLIC_KEY_SIZE, plain);
 
     if ((uint32_t)len != plain_size) {
-        return 1;
+        return;
     }
 
     if (onion_c->onion_data_handlers[plain[0]].function == nullptr) {
-        return 1;
+        return;
     }
 
-    return onion_c->onion_data_handlers[plain[0]].function(onion_c->onion_data_handlers[plain[0]].object, temp_plain, plain,
+    onion_c->onion_data_handlers[plain[0]].function(onion_c->onion_data_handlers[plain[0]].object, temp_plain, plain,
             plain_size, userdata);
 }
 
@@ -1263,15 +1224,18 @@ static int handle_tcp_onion(void *_Nonnull object, const uint8_t *_Nonnull data,
     ip_port.ip.family = net_family_tcp_server();
 
     if (data[0] == NET_PACKET_ANNOUNCE_RESPONSE) {
-        return handle_announce_response(object, &ip_port, data, length, userdata);
+        handle_announce_response(object, &ip_port, data, length, userdata);
+        return 0;
     }
 
     if (data[0] == NET_PACKET_ANNOUNCE_RESPONSE_OLD) {
-        return handle_announce_response_old(object, &ip_port, data, length, userdata);
+        handle_announce_response_old(object, &ip_port, data, length, userdata);
+        return 0;
     }
 
     if (data[0] == NET_PACKET_ONION_DATA_RESPONSE) {
-        return handle_data_response(object, &ip_port, data, length, userdata);
+        handle_data_response(object, &ip_port, data, length, userdata);
+        return 0;
     }
 
     return 1;
@@ -1354,7 +1318,10 @@ int send_onion_data(Onion_Client *onion_c, int friend_num, const uint8_t *data, 
             continue;
         }
 
-        if (send_onion_packet_tcp_udp(onion_c, &path, &node_list[good_nodes[i]].ip_port, o_packet, len) == 0) {
+        uint8_t tcp_packet[ONION_MAX_PACKET_SIZE];
+        const int p_len = create_onion_packet(onion_c->mem, onion_c->rng, tcp_packet, sizeof(tcp_packet), &path, &node_list[good_nodes[i]].ip_port, o_packet, len);
+
+        if (p_len != -1 && tor_transport_send(onion_c->tran, path.ip_port1.ip.ip.onion, path.ip_port1.port, nullptr, tcp_packet, p_len) == 1) {
             ++good;
         }
     }
@@ -2124,10 +2091,6 @@ static void reset_friend_run_counts(Onion_Client *_Nonnull onion_c)
 Onion_Connection_Status onion_connection_status(const Onion_Client *onion_c)
 {
     if (onion_c->onion_connected >= ONION_CONNECTION_SECONDS) {
-        if (onion_c->udp_connected) {
-            return ONION_CONNECTION_STATUS_UDP;
-        }
-
         return ONION_CONNECTION_STATUS_TCP;
     }
 
@@ -2161,10 +2124,8 @@ void do_onion_client(Onion_Client *onion_c)
         }
     }
 
-    onion_c->udp_connected = dht_non_lan_connected(onion_c->dht);
-
     if (mono_time_is_timeout(onion_c->mono_time, onion_c->first_run, ONION_CONNECTION_SECONDS * 2)) {
-        set_tcp_onion_status(nc_get_tcp_c(onion_c->c), !onion_c->udp_connected);
+        set_tcp_onion_status(nc_get_tcp_c(onion_c->c), true);
     }
 
     if (onion_connection_status(onion_c) != ONION_CONNECTION_STATUS_NONE) {
@@ -2204,13 +2165,13 @@ Onion_Client *new_onion_client(const Logger *logger, const Memory *mem, const Ra
     onion_c->rng = rng;
     onion_c->mem = mem;
     onion_c->dht = nc_get_dht(c);
-    onion_c->net = dht_get_net(onion_c->dht);
+    onion_c->tran = dht_get_transport(onion_c->dht);
     onion_c->c = c;
     new_symmetric_key(rng, onion_c->secret_symmetric_key);
     crypto_new_keypair(rng, onion_c->temp_public_key, onion_c->temp_secret_key);
-    networking_registerhandler(onion_c->net, NET_PACKET_ANNOUNCE_RESPONSE, &handle_announce_response, onion_c);
-    networking_registerhandler(onion_c->net, NET_PACKET_ANNOUNCE_RESPONSE_OLD, &handle_announce_response_old, onion_c);
-    networking_registerhandler(onion_c->net, NET_PACKET_ONION_DATA_RESPONSE, &handle_data_response, onion_c);
+    tor_transport_register_handler(onion_c->tran, NET_PACKET_ANNOUNCE_RESPONSE, &handle_announce_response, onion_c);
+    tor_transport_register_handler(onion_c->tran, NET_PACKET_ANNOUNCE_RESPONSE_OLD, &handle_announce_response_old, onion_c);
+    tor_transport_register_handler(onion_c->tran, NET_PACKET_ONION_DATA_RESPONSE, &handle_data_response, onion_c);
     oniondata_registerhandler(onion_c, ONION_DATA_DHTPK, &handle_dhtpk_announce, onion_c);
     cryptopacket_registerhandler(onion_c->dht, CRYPTO_PACKET_DHTPK, &handle_dht_dhtpk, onion_c);
     set_onion_packet_tcp_connection_callback(nc_get_tcp_c(onion_c->c), &handle_tcp_onion, onion_c);
@@ -2228,9 +2189,9 @@ void kill_onion_client(Onion_Client *onion_c)
 
     ping_array_kill(onion_c->announce_ping_array);
     realloc_onion_friends(onion_c, 0);
-    networking_registerhandler(onion_c->net, NET_PACKET_ANNOUNCE_RESPONSE, nullptr, nullptr);
-    networking_registerhandler(onion_c->net, NET_PACKET_ANNOUNCE_RESPONSE_OLD, nullptr, nullptr);
-    networking_registerhandler(onion_c->net, NET_PACKET_ONION_DATA_RESPONSE, nullptr, nullptr);
+    tor_transport_register_handler(onion_c->tran, NET_PACKET_ANNOUNCE_RESPONSE, nullptr, nullptr);
+    tor_transport_register_handler(onion_c->tran, NET_PACKET_ANNOUNCE_RESPONSE_OLD, nullptr, nullptr);
+    tor_transport_register_handler(onion_c->tran, NET_PACKET_ONION_DATA_RESPONSE, nullptr, nullptr);
     oniondata_registerhandler(onion_c, ONION_DATA_DHTPK, nullptr, nullptr);
     cryptopacket_registerhandler(onion_c->dht, CRYPTO_PACKET_DHTPK, nullptr, nullptr);
     set_onion_packet_tcp_connection_callback(nc_get_tcp_c(onion_c->c), nullptr, nullptr);

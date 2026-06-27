@@ -37,11 +37,31 @@ static void test_many_clients(void)
     Tox *toxes[TCP_TEST_NUM_TOXES];
     uint32_t index[TCP_TEST_NUM_TOXES];
 
-    for (uint32_t i = 0; i < TCP_TEST_NUM_TOXES; ++i) {
+    struct Tox_Options *opts0 = tox_options_new(nullptr);
+    ck_assert(opts0 != nullptr);
+    tox_options_set_tcp_port(opts0, 33455);
+
+    index[0] = 1;
+    toxes[0] = tox_new_log(opts0, nullptr, &index[0]);
+    tox_options_free(opts0);
+    ck_assert_msg(toxes[0] != nullptr, "failed to create tox instance 0");
+    tox_events_init(toxes[0]);
+
+    for (uint32_t i = 1; i < TCP_TEST_NUM_TOXES; ++i) {
         index[i] = i + 1;
         toxes[i] = tox_new_log(nullptr, nullptr, &index[i]);
         ck_assert_msg(toxes[i] != nullptr, "failed to create tox instances %u", i);
         tox_events_init(toxes[i]);
+    }
+
+    uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
+    tox_self_get_dht_id(toxes[0], dht_key);
+    const uint16_t tcp_port = tox_self_get_tcp_port(toxes[0], nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
+
+    for (uint32_t i = 1; i < TCP_TEST_NUM_TOXES; ++i) {
+        tox_bootstrap(toxes[i], "localhost", tcp_port, dht_key, nullptr);
+        tox_add_tcp_relay(toxes[i], "localhost", tcp_port, dht_key, nullptr);
     }
 
     Tox_Dispatch *dispatch = tox_dispatch_new(nullptr);
@@ -84,12 +104,6 @@ loop_top:
             goto loop_top;
         }
 
-        uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
-        tox_self_get_dht_id(toxes[pairs[i].tox1], dht_key);
-        const uint16_t dht_port = tox_self_get_udp_port(toxes[pairs[i].tox1], nullptr);
-
-        tox_bootstrap(toxes[pairs[i].tox2], "localhost", dht_port, dht_key, nullptr);
-
         ck_assert_msg(num != UINT32_MAX && test == TOX_ERR_FRIEND_ADD_OK, "failed to add friend error code: %u", test);
     }
 
@@ -106,7 +120,7 @@ loop_top:
 
         for (uint32_t i = 0; i < TCP_TEST_NUM_TOXES; ++i) {
             for (uint32_t j = 0; j < tox_self_get_friend_list_size(toxes[i]); ++j) {
-                if (tox_friend_get_connection_status(toxes[i], j, nullptr) == TOX_CONNECTION_UDP) {
+                if (tox_friend_get_connection_status(toxes[i], j, nullptr) == TOX_CONNECTION_TCP) {
                     ++counter;
                 }
             }

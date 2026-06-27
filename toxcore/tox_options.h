@@ -121,25 +121,6 @@ struct Tox_Options {
     bool ipv6_enabled;
 
     /**
-     * Enable the use of UDP communication when available.
-     *
-     * Setting this to false will force Tox to use TCP only. Communications will
-     * need to be relayed through a TCP relay node, potentially slowing them
-     * down.
-     *
-     * If a proxy is enabled, UDP will be disabled if either the Tox library or
-     * the proxy don't support proxying UDP messages.
-     */
-    bool udp_enabled;
-
-    /**
-     * Enable local network peer discovery.
-     *
-     * Disabling this will cause Tox to not look for peers on the local network.
-     */
-    bool local_discovery_enabled;
-
-    /**
      * Enable storing DHT announcements and forwarding corresponding requests.
      *
      * Disabling this will cause Tox to ignore the relevant packets.
@@ -205,11 +186,6 @@ struct Tox_Options {
      * to disable it.
      */
     uint16_t tcp_port;
-
-    /**
-     * Enables or disables UDP hole-punching. (Default: enabled).
-     */
-    bool hole_punching_enabled;
 
     /**
      * The type of savedata to load from.
@@ -317,14 +293,6 @@ bool tox_options_get_ipv6_enabled(const Tox_Options *options);
 
 void tox_options_set_ipv6_enabled(Tox_Options *options, bool ipv6_enabled);
 
-bool tox_options_get_udp_enabled(const Tox_Options *options);
-
-void tox_options_set_udp_enabled(Tox_Options *options, bool udp_enabled);
-
-bool tox_options_get_local_discovery_enabled(const Tox_Options *options);
-
-void tox_options_set_local_discovery_enabled(Tox_Options *options, bool local_discovery_enabled);
-
 bool tox_options_get_dht_announcements_enabled(const Tox_Options *options);
 
 void tox_options_set_dht_announcements_enabled(
@@ -353,10 +321,6 @@ void tox_options_set_end_port(Tox_Options *options, uint16_t end_port);
 uint16_t tox_options_get_tcp_port(const Tox_Options *options);
 
 void tox_options_set_tcp_port(Tox_Options *options, uint16_t tcp_port);
-
-bool tox_options_get_hole_punching_enabled(const Tox_Options *options);
-
-void tox_options_set_hole_punching_enabled(Tox_Options *options, bool hole_punching_enabled);
 
 Tox_Savedata_Type tox_options_get_savedata_type(const Tox_Options *options);
 

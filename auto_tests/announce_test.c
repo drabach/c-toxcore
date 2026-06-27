@@ -3,6 +3,7 @@
 
 #include "../toxcore/announce.h"
 #include "../toxcore/tox.h"
+#include "../toxcore/tor_transport.h"
 #include "../testing/misc_tools.h"
 #include "../toxcore/mono_time.h"
 #include "../toxcore/forwarding.h"
@@ -62,9 +63,13 @@ static void test_store_data(void)
     logger_callback_log(log, print_debug_logger, nullptr, nullptr);
     Mono_Time *mono_time = mono_time_new(mem, nullptr, nullptr);
     ck_assert(mono_time != nullptr);
-    Networking_Core *net = new_networking_no_udp(log, mem, ns);
-    ck_assert(net != nullptr);
-    DHT *dht = new_dht(log, mem, rng, ns, mono_time, net, true, true);
+    Tor_Transport_Config tor_cfg;
+    memset(&tor_cfg, 0, sizeof(tor_cfg));
+    snprintf(tor_cfg.proxy_host, sizeof(tor_cfg.proxy_host), "127.0.0.1");
+    tor_cfg.proxy_port = 9050;
+    Tor_Transport *tran = tor_transport_new(log, mem, mono_time, rng, ns, &tor_cfg);
+    ck_assert(tran != nullptr);
+    DHT *dht = new_dht(log, mem, rng, ns, mono_time, tran);
     ck_assert(dht != nullptr);
     Forwarding *forwarding = new_forwarding(log, mem, rng, mono_time, dht);
     ck_assert(forwarding != nullptr);
@@ -109,7 +114,7 @@ static void test_store_data(void)
     kill_announcements(announce);
     kill_forwarding(forwarding);
     kill_dht(dht);
-    kill_networking(net);
+    tor_transport_kill(tran);
     mono_time_free(mem, mono_time);
     logger_kill(log);
 }

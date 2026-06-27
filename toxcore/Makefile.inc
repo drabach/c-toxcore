@@ -86,8 +86,6 @@ libtoxcore_la_SOURCES = ../third_party/cmp/cmp.c \
                         ../toxcore/group_pack.h \
                         ../toxcore/group.c \
                         ../toxcore/group.h \
-                        ../toxcore/LAN_discovery.c \
-                        ../toxcore/LAN_discovery.h \
                         ../toxcore/list.c \
                         ../toxcore/list.h \
                         ../toxcore/logger.c \

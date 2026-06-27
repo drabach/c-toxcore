@@ -23,14 +23,10 @@
 #include "logger.h"
 #include "mem.h"
 #include "mono_time.h"
-#include "network.h"
 #include "util.h"
 
 /** Seconds since last direct UDP packet was received before the connection is considered dead */
-#define GCC_UDP_DIRECT_TIMEOUT (GC_PING_TIMEOUT + 4)
 
-/** Seconds since last direct UDP packet was sent before we can try again. Cheap NAT hole punch */
-#define GCC_UDP_DIRECT_RETRY 1
 
 /** Returns true if array entry does not contain an active packet. */
 static bool array_entry_is_empty(const GC_Message_Array_Entry *_Nonnull array_entry)
@@ -606,24 +602,8 @@ bool gcc_send_packet(const GC_Chat *chat, GC_Connection *gconn, const uint8_t *p
         return false;
     }
 
-    bool direct_send_attempt = false;
-
-    if (gcc_direct_conn_is_possible(chat, gconn)) {
-        if (gcc_conn_is_direct(chat->mono_time, gconn)) {
-            return (uint16_t) sendpacket(chat->net, &gconn->addr.ip_port, packet, length) == length;
-        }
-
-        if (gcc_conn_should_try_direct(chat->mono_time, gconn)) {
-            gconn->last_sent_direct_try_time = mono_time_get(chat->mono_time);
-
-            if ((uint16_t) sendpacket(chat->net, &gconn->addr.ip_port, packet, length) == length) {
-                direct_send_attempt = true;
-            }
-        }
-    }
-
     const int ret = send_packet_tcp_connection(chat->tcp_conn, gconn->tcp_connection_num, packet, length);
-    return ret == 0 || direct_send_attempt;
+    return ret == 0;
 }
 
 int gcc_encrypt_and_send_lossless_packet(const GC_Chat *chat, GC_Connection *gconn, const uint8_t *data,
@@ -665,17 +645,17 @@ void gcc_make_session_shared_key(GC_Connection *gconn, const uint8_t *sender_pk)
 
 bool gcc_conn_is_direct(const Mono_Time *mono_time, const GC_Connection *gconn)
 {
-    return GCC_UDP_DIRECT_TIMEOUT + gconn->last_received_direct_time > mono_time_get(mono_time);
+    return false;
 }
 
 bool gcc_conn_should_try_direct(const Mono_Time *mono_time, const GC_Connection *gconn)
 {
-    return mono_time_is_timeout(mono_time, gconn->last_sent_direct_try_time, GCC_UDP_DIRECT_RETRY);
+    return false;
 }
 
 bool gcc_direct_conn_is_possible(const GC_Chat *chat, const GC_Connection *gconn)
 {
-    return !net_family_is_unspec(gconn->addr.ip_port.ip.family) && !net_family_is_unspec(net_family(chat->net));
+    return false;
 }
 
 void gcc_mark_for_deletion(GC_Connection *gconn, TCP_Connections *tcp_conn, Group_Exit_Type type,

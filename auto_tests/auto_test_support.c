@@ -243,24 +243,17 @@ static void initialise_autotox(struct Tox_Options *options, AutoTox *autotox, ui
             options = default_opts;
         }
 
-        if (tox_options_get_udp_enabled(options)) {
-            tox_options_set_tcp_port(options, 0);
-            autotest_opts->tcp_port = 0;
+        // Try a few ports for the TCP relay.
+        for (uint16_t tcp_port = autotest_opts->tcp_port; tcp_port < autotest_opts->tcp_port + 200; ++tcp_port) {
+            tox_options_set_tcp_port(options, tcp_port);
             autotox->tox = tox_new_log(options, &err, &autotox->index);
-            ck_assert_msg(err == TOX_ERR_NEW_OK, "unexpected tox_new error: %u", err);
-        } else {
-            // Try a few ports for the TCP relay.
-            for (uint16_t tcp_port = autotest_opts->tcp_port; tcp_port < autotest_opts->tcp_port + 200; ++tcp_port) {
-                tox_options_set_tcp_port(options, tcp_port);
-                autotox->tox = tox_new_log(options, &err, &autotox->index);
 
-                if (autotox->tox != nullptr) {
-                    autotest_opts->tcp_port = tcp_port;
-                    break;
-                }
-
-                ck_assert_msg(err == TOX_ERR_NEW_PORT_ALLOC, "unexpected tox_new error (expected PORT_ALLOC): %u", err);
+            if (autotox->tox != nullptr) {
+                autotest_opts->tcp_port = tcp_port;
+                break;
             }
+
+            ck_assert_msg(err == TOX_ERR_NEW_PORT_ALLOC, "unexpected tox_new error (expected PORT_ALLOC): %u", err);
         }
 
         tox_options_free(default_opts);
@@ -338,28 +331,23 @@ static void initialise_friend_graph(Graph_Type graph, uint32_t num_toxes, AutoTo
 static void bootstrap_autotoxes(const Tox_Options *options, uint32_t tox_count, const Run_Auto_Options *autotest_opts,
                                 AutoTox *autotoxes)
 {
-    const bool udp_enabled = options != nullptr ? tox_options_get_udp_enabled(options) : true;
-
-    printf("bootstrapping all toxes off tox 0\n");
+    printf("bootstrapping all toxes off tox 0 via TCP relay\n");
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(autotoxes[0].tox, dht_key);
-    const uint16_t dht_port = tox_self_get_udp_port(autotoxes[0].tox, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(autotoxes[0].tox, nullptr);
+
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
 
     for (uint32_t i = 1; i < tox_count; ++i) {
         Tox_Err_Bootstrap err;
-        tox_bootstrap(autotoxes[i].tox, "localhost", dht_port, dht_key, &err);
-        ck_assert_msg(err == TOX_ERR_BOOTSTRAP_OK, "bootstrap error for port %d: %u", dht_port, err);
+        tox_bootstrap(autotoxes[i].tox, "localhost", tcp_port, dht_key, &err);
+        ck_assert_msg(err == TOX_ERR_BOOTSTRAP_OK, "bootstrap error for port %d: %u", tcp_port, err);
     }
 
-    if (!udp_enabled) {
-        ck_assert(autotest_opts->tcp_port != 0);
-        printf("bootstrapping all toxes to local TCP relay running on port %d\n", autotest_opts->tcp_port);
-
-        for (uint32_t i = 0; i < tox_count; ++i) {
-            Tox_Err_Bootstrap err;
-            tox_add_tcp_relay(autotoxes[i].tox, "localhost", autotest_opts->tcp_port, dht_key, &err);
-            ck_assert(err == TOX_ERR_BOOTSTRAP_OK);
-        }
+    for (uint32_t i = 0; i < tox_count; ++i) {
+        Tox_Err_Bootstrap err;
+        tox_add_tcp_relay(autotoxes[i].tox, "localhost", tcp_port, dht_key, &err);
+        ck_assert(err == TOX_ERR_BOOTSTRAP_OK);
     }
 }
 
@@ -460,7 +448,6 @@ Tox *tox_new_log_lan(struct Tox_Options *options, Tox_Err_New *err, void *log_us
     assert(log_options != nullptr);
 
     tox_options_set_ipv6_enabled(log_options, USE_IPV6);
-    tox_options_set_local_discovery_enabled(log_options, lan_discovery);
     // Use a higher start port for non-LAN-discovery tests so it's more likely for the LAN discovery
     // test to get the default port 33445.
     const uint16_t start_port = lan_discovery ? 33445 : 33545;

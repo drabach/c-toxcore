@@ -107,12 +107,6 @@ bool tox_dht_send_nodes_request(const Tox *tox, const uint8_t *public_key, const
 
     tox_lock(tox);
 
-    if (tox->m->options.udp_disabled) {
-        SET_ERROR_PARAMETER(error, TOX_ERR_DHT_SEND_NODES_REQUEST_UDP_DISABLED);
-        tox_unlock(tox);
-        return false;
-    }
-
     if (public_key == nullptr || ip == nullptr || target_public_key == nullptr) {
         SET_ERROR_PARAMETER(error, TOX_ERR_DHT_SEND_NODES_REQUEST_NULL);
         tox_unlock(tox);
@@ -263,8 +257,7 @@ uint64_t tox_netprof_get_packet_id_count(const Tox *tox, Tox_Netprof_Packet_Type
         }
 
         case TOX_NETPROF_PACKET_TYPE_UDP: {
-            const Net_Profile *udp_profile = net_get_net_profile(tox->m->net);
-            count = netprof_get_packet_count_id(udp_profile, id, dir);
+            // UDP is not available in Tor-only mode.
             break;
         }
 
@@ -312,8 +305,7 @@ uint64_t tox_netprof_get_packet_total_count(const Tox *tox, Tox_Netprof_Packet_T
         }
 
         case TOX_NETPROF_PACKET_TYPE_UDP: {
-            const Net_Profile *udp_profile = net_get_net_profile(tox->m->net);
-            count = netprof_get_packet_count_total(udp_profile, dir);
+            // UDP is not available in Tor-only mode.
             break;
         }
 
@@ -361,8 +353,7 @@ uint64_t tox_netprof_get_packet_id_bytes(const Tox *tox, Tox_Netprof_Packet_Type
         }
 
         case TOX_NETPROF_PACKET_TYPE_UDP: {
-            const Net_Profile *udp_profile = net_get_net_profile(tox->m->net);
-            bytes = netprof_get_bytes_id(udp_profile, id, dir);
+            // UDP is not available in Tor-only mode.
             break;
         }
 
@@ -410,8 +401,7 @@ uint64_t tox_netprof_get_packet_total_bytes(const Tox *tox, Tox_Netprof_Packet_T
         }
 
         case TOX_NETPROF_PACKET_TYPE_UDP: {
-            const Net_Profile *udp_profile = net_get_net_profile(tox->m->net);
-            bytes = netprof_get_bytes_total(udp_profile, dir);
+            // UDP is not available in Tor-only mode.
             break;
         }
 

@@ -69,8 +69,6 @@ static void test_many_clients_tcp(void)
 
         if (i == 0) {
             tox_options_set_tcp_port(opts, tcp_relay_port);
-        } else {
-            tox_options_set_udp_enabled(opts, false);
         }
 
         index[i] = i + 1;
@@ -90,7 +88,8 @@ static void test_many_clients_tcp(void)
         Tox_Err_Bootstrap error;
         ck_assert_msg(tox_add_tcp_relay(toxes[i], TOX_LOCALHOST, tcp_relay_port, dpk, &error), "add relay error, %u, %u", i,
                       error);
-        uint16_t first_port = tox_self_get_udp_port(toxes[0], nullptr);
+        uint16_t first_port = tox_self_get_tcp_port(toxes[0], nullptr);
+        ck_assert_msg(first_port != 0, "TCP relay port should be non-zero");
         ck_assert_msg(tox_bootstrap(toxes[i], TOX_LOCALHOST, first_port, dpk, nullptr), "Bootstrap error");
 
         tox_options_free(opts);
@@ -182,8 +181,6 @@ static void test_many_clients_tcp_b(void)
 
         if (i < NUM_TCP_RELAYS) {
             tox_options_set_tcp_port(opts, tcp_relay_port + i);
-        } else {
-            tox_options_set_udp_enabled(opts, 0);
         }
 
         index[i] = i + 1;
@@ -195,7 +192,8 @@ static void test_many_clients_tcp_b(void)
         ck_assert_msg(tox_add_tcp_relay(toxes[i], TOX_LOCALHOST, tcp_relay_port + (i % NUM_TCP_RELAYS), dpk, nullptr),
                       "add relay error");
         tox_self_get_dht_id(toxes[0], dpk);
-        uint16_t first_port = tox_self_get_udp_port(toxes[0], nullptr);
+        uint16_t first_port = tox_self_get_tcp_port(toxes[0], nullptr);
+        ck_assert_msg(first_port != 0, "TCP relay port should be non-zero");
         ck_assert_msg(tox_bootstrap(toxes[i], TOX_LOCALHOST, first_port, dpk, nullptr), "Bootstrap error");
 
         tox_options_free(opts);

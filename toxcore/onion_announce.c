@@ -12,7 +12,6 @@
 #include <string.h>
 
 #include "DHT.h"
-#include "LAN_discovery.h"
 #include "attributes.h"
 #include "ccompat.h"
 #include "crypto_core.h"
@@ -60,7 +59,7 @@ struct Onion_Announce {
     const Random *rng;
     const Memory *mem;
     DHT     *dht;
-    Networking_Core *net;
+    Tor_Transport *tran;
     Onion_Announce_Entry entries[ONION_ANNOUNCE_MAX_ENTRIES];
     uint8_t hmac_key[CRYPTO_HMAC_KEY_SIZE];
 
@@ -194,7 +193,7 @@ int create_data_request(const Memory *mem, const Random *rng, uint8_t *packet, u
  * return 0 on success.
  */
 int send_announce_request(
-    const Logger *log, const Memory *mem, const Networking_Core *net, const Random *rng,
+    const Logger *log, const Memory *mem, const Tor_Transport *tran, const Random *rng,
     const Onion_Path *path, const Node_format *dest,
     const uint8_t *public_key, const uint8_t *secret_key,
     const uint8_t *ping_id, const uint8_t *client_id,
@@ -215,7 +214,7 @@ int send_announce_request(
         return -1;
     }
 
-    if (sendpacket(net, &path->ip_port1, packet, len) != len) {
+    if (tor_transport_send((Tor_Transport *)tran, path->ip_port1.ip.ip.onion, path->ip_port1.port, nullptr, packet, len) != 1) {
         return -1;
     }
 
@@ -239,7 +238,7 @@ int send_announce_request(
  * return 0 on success.
  */
 int send_data_request(
-    const Logger *log, const Memory *mem, const Networking_Core *net, const Random *rng, const Onion_Path *path, const IP_Port *dest,
+    const Logger *log, const Memory *mem, const Tor_Transport *tran, const Random *rng, const Onion_Path *path, const IP_Port *dest,
     const uint8_t *public_key, const uint8_t *encrypt_public_key, const uint8_t *nonce,
     const uint8_t *data, uint16_t length)
 {
@@ -257,7 +256,7 @@ int send_data_request(
         return -1;
     }
 
-    if (sendpacket(net, &path->ip_port1, packet, len) != len) {
+    if (tor_transport_send((Tor_Transport *)tran, path->ip_port1.ip.ip.onion, path->ip_port1.port, nullptr, packet, len) != 1) {
         return -1;
     }
 
@@ -476,7 +475,6 @@ static int handle_announce_request_common(
     const uint8_t *shared_key = shared_key_cache_lookup(onion_a->shared_keys_recv, packet_public_key);
 
     if (shared_key == nullptr) {
-        /* Error looking up/deriving the shared key */
         return 1;
     }
 
@@ -520,7 +518,7 @@ static int handle_announce_request_common(
     /* Respond with a announce response packet */
     Node_format nodes_list[MAX_SENT_NODES];
     const unsigned int num_nodes =
-        get_close_nodes(onion_a->dht, plain + ONION_PING_ID_SIZE, nodes_list, net_family_unspec(), ip_is_lan(&source->ip), false);
+        get_close_nodes(onion_a->dht, plain + ONION_PING_ID_SIZE, nodes_list, false);
 
     assert(num_nodes <= UINT8_MAX);
 
@@ -594,7 +592,7 @@ static int handle_announce_request_common(
            ONION_ANNOUNCE_SENDBACK_DATA_LENGTH);
     memcpy(data + 1 + ONION_ANNOUNCE_SENDBACK_DATA_LENGTH, nonce, CRYPTO_NONCE_SIZE);
 
-    if (send_onion_response(onion_a->log, onion_a->net, source, data,
+    if (send_onion_response(onion_a->log, onion_a->tran, source, data,
                             1 + ONION_ANNOUNCE_SENDBACK_DATA_LENGTH + CRYPTO_NONCE_SIZE + len,
                             packet + (length - ONION_RETURN_3)) == -1) {
         mem_delete(onion_a->mem, response);
@@ -622,49 +620,50 @@ static int handle_gca_announce_request(Onion_Announce *_Nonnull onion_a, const I
                                           true, onion_a->extra_data_max_size, onion_a->extra_data_callback);
 }
 
-static int handle_announce_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                                   void *_Nullable userdata)
+static void handle_announce_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
+                                    void *_Nullable userdata)
 {
     Onion_Announce *onion_a = (Onion_Announce *)object;
     if (length != ANNOUNCE_REQUEST_MIN_SIZE_RECV) {
-        return handle_gca_announce_request(onion_a, source, packet, length);
+        handle_gca_announce_request(onion_a, source, packet, length);
+        return;
     }
 
-    return handle_announce_request_common(onion_a, source, packet, length, NET_PACKET_ANNOUNCE_RESPONSE,
-                                          ONION_PING_ID_SIZE + CRYPTO_PUBLIC_KEY_SIZE * 2 + ONION_ANNOUNCE_SENDBACK_DATA_LENGTH,
-                                          true, 0, nullptr);
+    handle_announce_request_common(onion_a, source, packet, length, NET_PACKET_ANNOUNCE_RESPONSE,
+                                   ONION_PING_ID_SIZE + CRYPTO_PUBLIC_KEY_SIZE * 2 + ONION_ANNOUNCE_SENDBACK_DATA_LENGTH,
+                                   true, 0, nullptr);
 }
 
 /* TODO(Jfreegman): DEPRECATE */
-static int handle_announce_request_old(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                                       void *_Nullable userdata)
+static void handle_announce_request_old(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
+                                        void *_Nullable userdata)
 {
     Onion_Announce *onion_a = (Onion_Announce *)object;
     if (length != ANNOUNCE_REQUEST_SIZE_RECV) {
-        return 1;
+        return;
     }
 
-    return handle_announce_request_common(onion_a, source, packet, length, NET_PACKET_ANNOUNCE_RESPONSE_OLD,
-                                          ONION_PING_ID_SIZE + CRYPTO_PUBLIC_KEY_SIZE * 2 + ONION_ANNOUNCE_SENDBACK_DATA_LENGTH,
-                                          false, 0, nullptr);
+    handle_announce_request_common(onion_a, source, packet, length, NET_PACKET_ANNOUNCE_RESPONSE_OLD,
+                                   ONION_PING_ID_SIZE + CRYPTO_PUBLIC_KEY_SIZE * 2 + ONION_ANNOUNCE_SENDBACK_DATA_LENGTH,
+                                   false, 0, nullptr);
 }
 
-static int handle_data_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
+static void handle_data_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
 {
     const Onion_Announce *onion_a = (const Onion_Announce *)object;
 
     if (length <= DATA_REQUEST_MIN_SIZE_RECV) {
-        return 1;
+        return;
     }
 
     if (length > ONION_MAX_PACKET_SIZE) {
-        return 1;
+        return;
     }
 
     const int index = in_entries(onion_a, packet + 1);
 
     if (index == -1) {
-        return 1;
+        return;
     }
 
     const uint16_t data_size = length - (CRYPTO_PUBLIC_KEY_SIZE + ONION_RETURN_3);
@@ -672,12 +671,8 @@ static int handle_data_request(void *_Nonnull object, const IP_Port *_Nonnull so
     data[0] = NET_PACKET_ONION_DATA_RESPONSE;
     memcpy(data + 1, packet + 1 + CRYPTO_PUBLIC_KEY_SIZE, length - (1 + CRYPTO_PUBLIC_KEY_SIZE + ONION_RETURN_3));
 
-    if (send_onion_response(onion_a->log, onion_a->net, &onion_a->entries[index].ret_ip_port, data, data_size,
-                            onion_a->entries[index].ret) == -1) {
-        return 1;
-    }
-
-    return 0;
+    send_onion_response(onion_a->log, onion_a->tran, &onion_a->entries[index].ret_ip_port, data, data_size,
+                        onion_a->entries[index].ret);
 }
 
 Onion_Announce *new_onion_announce(const Logger *log, const Memory *mem, const Random *rng, const Mono_Time *mono_time, DHT *dht)
@@ -697,7 +692,7 @@ Onion_Announce *new_onion_announce(const Logger *log, const Memory *mem, const R
     onion_a->mem = mem;
     onion_a->mono_time = mono_time;
     onion_a->dht = dht;
-    onion_a->net = dht_get_net(dht);
+    onion_a->tran = dht_get_transport(dht);
     onion_a->extra_data_max_size = 0;
     onion_a->extra_data_callback = nullptr;
     onion_a->extra_data_object = nullptr;
@@ -710,9 +705,9 @@ Onion_Announce *new_onion_announce(const Logger *log, const Memory *mem, const R
         return nullptr;
     }
 
-    networking_registerhandler(onion_a->net, NET_PACKET_ANNOUNCE_REQUEST, &handle_announce_request, onion_a);
-    networking_registerhandler(onion_a->net, NET_PACKET_ANNOUNCE_REQUEST_OLD, &handle_announce_request_old, onion_a);
-    networking_registerhandler(onion_a->net, NET_PACKET_ONION_DATA_REQUEST, &handle_data_request, onion_a);
+    tor_transport_register_handler(onion_a->tran, NET_PACKET_ANNOUNCE_REQUEST, &handle_announce_request, onion_a);
+    tor_transport_register_handler(onion_a->tran, NET_PACKET_ANNOUNCE_REQUEST_OLD, &handle_announce_request_old, onion_a);
+    tor_transport_register_handler(onion_a->tran, NET_PACKET_ONION_DATA_REQUEST, &handle_data_request, onion_a);
 
     return onion_a;
 }
@@ -723,9 +718,9 @@ void kill_onion_announce(Onion_Announce *onion_a)
         return;
     }
 
-    networking_registerhandler(onion_a->net, NET_PACKET_ANNOUNCE_REQUEST, nullptr, nullptr);
-    networking_registerhandler(onion_a->net, NET_PACKET_ANNOUNCE_REQUEST_OLD, nullptr, nullptr);
-    networking_registerhandler(onion_a->net, NET_PACKET_ONION_DATA_REQUEST, nullptr, nullptr);
+    tor_transport_register_handler(onion_a->tran, NET_PACKET_ANNOUNCE_REQUEST, nullptr, nullptr);
+    tor_transport_register_handler(onion_a->tran, NET_PACKET_ANNOUNCE_REQUEST_OLD, nullptr, nullptr);
+    tor_transport_register_handler(onion_a->tran, NET_PACKET_ONION_DATA_REQUEST, nullptr, nullptr);
 
     crypto_memzero(onion_a->hmac_key, CRYPTO_HMAC_KEY_SIZE);
     shared_key_cache_free(onion_a->shared_keys_recv);

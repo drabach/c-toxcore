@@ -11,7 +11,6 @@
 #include <string.h>
 
 #include "DHT.h"
-#include "LAN_discovery.h"
 #include "TCP_connection.h"
 #include "attributes.h"
 #include "ccompat.h"
@@ -73,7 +72,6 @@ struct Friend_Connections {
     const Logger *logger;
     Net_Crypto *net_crypto;
     DHT *dht;
-    Broadcast_Info *broadcast;
     Onion_Client *onion_c;
 
     Friend_Conn *conns;
@@ -84,11 +82,6 @@ struct Friend_Connections {
 
     global_status_cb *global_status_callback;
     void *global_status_callback_object;
-
-    uint64_t last_lan_discovery;
-    uint16_t next_lan_port;
-
-    bool local_discovery_enabled;
 };
 
 int friend_conn_get_onion_friendnum(const Friend_Conn *fc)
@@ -234,15 +227,6 @@ static int friend_add_tcp_relay(Friend_Connections *_Nonnull fr_c, int friendcon
 
     if (friend_con == nullptr) {
         return -1;
-    }
-
-    /* Local ip and same pk means that they are hosting a TCP relay. */
-    if (ip_is_local(&ipp_copy.ip) && pk_equal(friend_con->dht_temp_pk, public_key)) {
-        if (!net_family_is_unspec(friend_con->dht_ip_port.ip.family)) {
-            ipp_copy.ip = friend_con->dht_ip_port.ip;
-        } else {
-            friend_con->hosting_tcp_relay = false;
-        }
     }
 
     const uint16_t index = friend_con->tcp_relay_counter % FRIEND_MAX_STORED_TCP_RELAYS;
@@ -896,7 +880,7 @@ int send_friend_request_packet(Friend_Connections *fr_c, int friendcon_id, uint3
 /** Create new friend_connections instance. */
 Friend_Connections *new_friend_connections(
     const Logger *logger, const Memory *mem, const Mono_Time *mono_time, const Network *ns,
-    Onion_Client *onion_c, bool local_discovery_enabled)
+    Onion_Client *onion_c)
 {
     if (onion_c == nullptr) {
         return nullptr;
@@ -908,52 +892,16 @@ Friend_Connections *new_friend_connections(
         return nullptr;
     }
 
-    temp->local_discovery_enabled = local_discovery_enabled;
-
-    if (temp->local_discovery_enabled) {
-        temp->broadcast = lan_discovery_init(mem, ns);
-
-        if (temp->broadcast == nullptr) {
-            LOGGER_ERROR(logger, "could not initialise LAN discovery");
-            temp->local_discovery_enabled = false;
-        }
-    }
-
     temp->mono_time = mono_time;
     temp->mem = mem;
     temp->logger = logger;
     temp->dht = onion_get_dht(onion_c);
     temp->net_crypto = onion_get_net_crypto(onion_c);
     temp->onion_c = onion_c;
-    // Don't include default port in port range
-    temp->next_lan_port = TOX_PORTRANGE_FROM + 1;
 
     new_connection_handler(temp->net_crypto, &handle_new_connections, temp);
 
     return temp;
-}
-
-/** Send a LAN discovery packet every LAN_DISCOVERY_INTERVAL seconds. */
-static void lan_discovery(Friend_Connections *_Nonnull fr_c)
-{
-    if (fr_c->last_lan_discovery + LAN_DISCOVERY_INTERVAL < mono_time_get(fr_c->mono_time)) {
-        const uint16_t first = fr_c->next_lan_port;
-        uint16_t last = first + PORTS_PER_DISCOVERY;
-        last = last > TOX_PORTRANGE_TO ? TOX_PORTRANGE_TO : last;
-
-        // Always send to default port
-        lan_discovery_send(dht_get_net(fr_c->dht), fr_c->broadcast, dht_get_self_public_key(fr_c->dht),
-                           net_htons(TOX_PORT_DEFAULT));
-
-        // And check some extra ports
-        for (uint16_t port = first; port < last; ++port) {
-            lan_discovery_send(dht_get_net(fr_c->dht), fr_c->broadcast, dht_get_self_public_key(fr_c->dht), net_htons(port));
-        }
-
-        // Don't include default port in port range
-        fr_c->next_lan_port = last != TOX_PORTRANGE_TO ? last : TOX_PORTRANGE_FROM + 1;
-        fr_c->last_lan_discovery = mono_time_get(fr_c->mono_time);
-    }
 }
 
 /** main friend_connections loop. */
@@ -1003,9 +951,6 @@ void do_friend_connections(Friend_Connections *fr_c, void *userdata)
         }
     }
 
-    if (fr_c->local_discovery_enabled) {
-        lan_discovery(fr_c);
-    }
 }
 
 /** Free everything related with friend_connections. */
@@ -1024,6 +969,5 @@ void kill_friend_connections(Friend_Connections *fr_c)
         mem_delete(fr_c->mem, fr_c->conns);
     }
 
-    lan_discovery_kill(fr_c->broadcast);
     mem_delete(fr_c->mem, fr_c);
 }

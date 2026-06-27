@@ -4,6 +4,7 @@
 
 #include "../toxcore/tox.h"
 #include "../toxcore/announce.h"
+#include "../toxcore/tor_transport.h"
 #include "../testing/misc_tools.h"
 #include "../toxcore/mono_time.h"
 #include "../toxcore/forwarding.h"
@@ -37,7 +38,7 @@ static inline IP get_loopback(void)
 #define FORWARDING_BASE_PORT 36571
 
 typedef struct Test_Data {
-    Networking_Core *net;
+    Tor_Transport *tran;
     uint32_t send_back;
     uint64_t sent;
     bool returned;
@@ -58,7 +59,7 @@ static void test_forwarded_request_cb(void *object, const IP_Port *forwarder,
     uint8_t reply[12];
     memcpy(reply, "reply:  ", 8);
     memcpy(reply + 8, data + 8, 4);
-    ck_assert_msg(forward_reply(test_data->net, forwarder, sendback, sendback_length, reply, 12),
+    ck_assert_msg(forward_reply(test_data->tran, forwarder, sendback, sendback_length, reply, 12),
                   "[%u] forward_reply failed", *index);
 }
 
@@ -95,7 +96,7 @@ static bool all_returned(Test_Data *test_data)
 typedef struct Forwarding_Subtox {
     Logger *log;
     Mono_Time *mono_time;
-    Networking_Core *net;
+    Tor_Transport *tran;
     Net_Profile *tcp_np;
     DHT *dht;
     Net_Crypto *c;
@@ -118,14 +119,13 @@ static Forwarding_Subtox *new_forwarding_subtox(const Memory *mem, bool no_udp, 
     logger_callback_log(subtox->log, print_debug_logger, nullptr, index);
     subtox->mono_time = mono_time_new(mem, nullptr, nullptr);
 
-    if (no_udp) {
-        subtox->net = new_networking_no_udp(subtox->log, mem, ns);
-    } else {
-        const IP ip = get_loopback();
-        subtox->net = new_networking_ex(subtox->log, mem, ns, &ip, port, port, nullptr);
-    }
+    Tor_Transport_Config tor_cfg;
+    memset(&tor_cfg, 0, sizeof(tor_cfg));
+    snprintf(tor_cfg.proxy_host, sizeof(tor_cfg.proxy_host), "127.0.0.1");
+    tor_cfg.proxy_port = 9050;
+    subtox->tran = tor_transport_new(subtox->log, mem, subtox->mono_time, rng, ns, &tor_cfg);
 
-    subtox->dht = new_dht(subtox->log, mem, rng, ns, subtox->mono_time, subtox->net, true, true);
+    subtox->dht = new_dht(subtox->log, mem, rng, ns, subtox->mono_time, subtox->tran);
 
     subtox->tcp_np = netprof_new(subtox->log, mem);
     ck_assert(subtox->tcp_np != nullptr);
@@ -149,7 +149,7 @@ static void kill_forwarding_subtox(const Memory *mem, Forwarding_Subtox *subtox)
     kill_net_crypto(subtox->c);
     netprof_kill(mem, subtox->tcp_np);
     kill_dht(subtox->dht);
-    kill_networking(subtox->net);
+    tor_transport_kill(subtox->tran);
     mono_time_free(mem, subtox->mono_time);
     logger_kill(subtox->log);
     free(subtox);
@@ -174,7 +174,7 @@ static void test_forwarding(void)
         index[i] = i + 1;
         subtoxes[i] = new_forwarding_subtox(mem, i < NUM_FORWARDER_TCP, &index[i], FORWARDING_BASE_PORT + i);
 
-        test_data[i].net = subtoxes[i]->net;
+        test_data[i].tran = subtoxes[i]->tran;
         test_data[i].send_back = 0;
         test_data[i].sent = 0;
         test_data[i].returned = false;
@@ -205,19 +205,12 @@ static void test_forwarding(void)
     uint8_t dpk[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(relay, dpk);
 
-    printf("1-%d connected only to TCP server; %d-%d connected only to DHT\n",
-           NUM_FORWARDER_TCP, NUM_FORWARDER_TCP + 1, NUM_FORWARDER);
+    printf("connecting all subtoxes via TCP relay\n");
 
-    for (uint32_t i = 0; i < NUM_FORWARDER_TCP; ++i) {
+    for (uint32_t i = 0; i < NUM_FORWARDER; ++i) {
         set_tcp_onion_status(nc_get_tcp_c(subtoxes[i]->c), 1);
         ck_assert_msg(add_tcp_relay(subtoxes[i]->c, &relay_ipport_tcp, dpk) == 0,
                       "Failed to add TCP relay");
-    }
-
-    IP_Port relay_ipport_udp = {ip, net_htons(tox_self_get_udp_port(relay, nullptr))};
-
-    for (uint32_t i = NUM_FORWARDER_TCP; i < NUM_FORWARDER; ++i) {
-        dht_bootstrap(subtoxes[i]->dht, &relay_ipport_udp, dpk);
     }
 
     printf("allowing DHT to populate\n");
@@ -233,7 +226,7 @@ static void test_forwarding(void)
             for (uint32_t i = 0; i < NUM_FORWARDER; ++i) {
                 Forwarding_Subtox *const subtox = subtoxes[i];
                 mono_time_update(subtox->mono_time);
-                networking_poll(subtox->net, &index[i]);
+                tor_transport_iterate(subtox->tran, &index[i]);
                 do_net_crypto(subtox->c, &index[i]);
                 do_dht(subtox->dht);
 
@@ -289,7 +282,7 @@ static void test_forwarding(void)
                         test_data[i].sent = mono_time_get(subtox->mono_time);
                     }
                 } else {
-                    if (send_forward_request(subtox->net, &first_ipp,
+                    if (send_forward_request(subtox->tran, &first_ipp,
                                              chain_keys, chain_length, data, length)) {
                         test_data[i].sent = mono_time_get(subtox->mono_time);
                     }
@@ -316,8 +309,7 @@ static void test_forwarding(void)
         ck_assert(NUM_FORWARDER - NUM_FORWARDER_TCP > 1);
 
         for (uint32_t i = NUM_FORWARDER_TCP; i < NUM_FORWARDER; ++i) {
-            ck_assert_msg(get_close_nodes(subtoxes[i]->dht, dht_get_self_public_key(subtoxes[i]->dht), nodes, net_family_unspec(), true,
-                                          true) > 0,
+            ck_assert_msg(get_close_nodes(subtoxes[i]->dht, dht_get_self_public_key(subtoxes[i]->dht), nodes, true) > 0,
                           "node %u has no nodes marked as announce nodes", i);
         }
     }

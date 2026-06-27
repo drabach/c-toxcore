@@ -22,6 +22,7 @@
 #include "mono_time.h"
 #include "net_profile.h"
 #include "network.h"
+#include "tor_transport.h"
 
 #define MAX_GC_PART_MESSAGE_SIZE 128
 #define MAX_GC_NICK_SIZE 128
@@ -55,12 +56,7 @@
 /* Max number of messages to store in the send/recv arrays */
 #define GCC_BUFFER_SIZE 2048
 
-/** Self UDP status. Must correspond to return values from `ipport_self_copy()`. */
-typedef enum Self_UDP_Status {
-    SELF_UDP_STATUS_NONE = 0x00,
-    SELF_UDP_STATUS_WAN  = 0x01,
-    SELF_UDP_STATUS_LAN  = 0x02,
-} Self_UDP_Status;
+
 
 /** Group exit types. */
 typedef enum Group_Exit_Type {
@@ -271,10 +267,9 @@ typedef struct GC_Chat {
     const Random    *_Nonnull rng;
 
     uint32_t        connected_tcp_relays;
-    Self_UDP_Status self_udp_status;
     IP_Port         self_ip_port;
 
-    Networking_Core *_Nonnull net;
+    Tor_Transport *_Nonnull tran;
     TCP_Connections *_Nullable tcp_conn;
 
     uint64_t        last_checked_tcp_relays;

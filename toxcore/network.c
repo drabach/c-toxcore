@@ -494,6 +494,144 @@ bool net_is_onion(const char *host)
            host[len - 1] == 'n';
 }
 
+static const uint8_t base32_table[256] = {
+    ['A'] = 0, ['B'] = 1, ['C'] = 2, ['D'] = 3,
+    ['E'] = 4, ['F'] = 5, ['G'] = 6, ['H'] = 7,
+    ['I'] = 8, ['J'] = 9, ['K'] = 10, ['L'] = 11,
+    ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15,
+    ['Q'] = 16, ['R'] = 17, ['S'] = 18, ['T'] = 19,
+    ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
+    ['Y'] = 24, ['Z'] = 25,
+    ['2'] = 26, ['3'] = 27, ['4'] = 28, ['5'] = 29,
+    ['6'] = 30, ['7'] = 31,
+};
+
+static bool base32_decode(const char *_Nonnull in, size_t in_len, uint8_t *_Nonnull out, size_t out_len)
+{
+    if (in_len * 5 < out_len * 8) {
+        return false;
+    }
+
+    size_t out_pos = 0;
+    int buffer = 0;
+    int bits_left = 0;
+
+    for (size_t i = 0; i < in_len; ++i) {
+        const int c = (unsigned char)in[i];
+        uint8_t val;
+
+        if (c >= 'a' && c <= 'z') {
+            val = c - 'a';
+        } else if (c >= 'A' && c <= 'Z') {
+            val = c - 'A';
+        } else if (c >= '2' && c <= '7') {
+            val = c - '2' + 26;
+        } else {
+            return false;
+        }
+
+        buffer = (buffer << 5) | val;
+        bits_left += 5;
+
+        if (bits_left >= 8) {
+            bits_left -= 8;
+            if (out_pos >= out_len) {
+                return false;
+            }
+            out[out_pos++] = (uint8_t)(buffer >> bits_left);
+            buffer &= (1 << bits_left) - 1;
+        }
+    }
+
+    return out_pos == out_len;
+}
+
+static size_t base32_encode(const uint8_t *_Nonnull in, size_t in_len, char *_Nonnull out, size_t out_len)
+{
+    static const char alphabet[32] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+    size_t in_pos = 0;
+    size_t out_pos = 0;
+    int buffer = 0;
+    int bits_left = 0;
+
+    while (in_pos < in_len) {
+        buffer = (buffer << 8) | in[in_pos++];
+        bits_left += 8;
+
+        while (bits_left >= 5) {
+            bits_left -= 5;
+            if (out_pos >= out_len) {
+                return 0;
+            }
+            out[out_pos++] = alphabet[(buffer >> bits_left) & 0x1f];
+        }
+    }
+
+    if (bits_left > 0) {
+        buffer <<= (5 - bits_left);
+        if (out_pos >= out_len) {
+            return 0;
+        }
+        out[out_pos++] = alphabet[buffer & 0x1f];
+    }
+
+    return out_pos;
+}
+
+bool onion_addr_from_string(const char *host, uint8_t *addr)
+{
+    if (host == nullptr || addr == nullptr) {
+        return false;
+    }
+
+    size_t len = strlen(host);
+
+    // Strip trailing ".onion" suffix (6 chars + optional dot before)
+    if (len >= 7 && host[len - 1] == 'n' && host[len - 2] == 'o' &&
+        host[len - 3] == 'i' && host[len - 4] == 'n' &&
+        host[len - 5] == 'o' && host[len - 6] == '.') {
+        len -= 6;
+    }
+
+    // v3 onion: 56 base32 chars encode to 35 bytes
+    if (len != 56) {
+        return false;
+    }
+
+    return base32_decode(host, len, addr, ONION_V3_ADDRESS_SIZE);
+}
+
+const char *onion_addr_to_string(const uint8_t *addr, char *buf, size_t bufsz)
+{
+    if (addr == nullptr || buf == nullptr) {
+        return nullptr;
+    }
+
+    const size_t encoded_len = base32_encode(addr, ONION_V3_ADDRESS_SIZE, buf, bufsz);
+
+    if (encoded_len == 0 || encoded_len + 7 > bufsz) {
+        return nullptr;
+    }
+
+    // Append ".onion" suffix (lowercase)
+    for (size_t i = 0; i < encoded_len; ++i) {
+        if (buf[i] >= 'A' && buf[i] <= 'Z') {
+            buf[i] = buf[i] - 'A' + 'a';
+        }
+    }
+
+    buf[encoded_len] = '.';
+    buf[encoded_len + 1] = 'o';
+    buf[encoded_len + 2] = 'n';
+    buf[encoded_len + 3] = 'i';
+    buf[encoded_len + 4] = 'o';
+    buf[encoded_len + 5] = 'n';
+    buf[encoded_len + 6] = '\0';
+
+    return buf;
+}
+
 bool sock_valid(Socket sock)
 {
     const Socket invalid_socket = net_invalid_socket();
@@ -1515,6 +1653,10 @@ bool ip_equal(const IP *a, const IP *b)
 
     /* same family */
     if (a->family.value == b->family.value) {
+        if (net_family_is_onion(a->family)) {
+            return memcmp(a->ip.onion, b->ip.onion, ONION_V3_ADDRESS_SIZE) == 0;
+        }
+
         if (net_family_is_ipv4(a->family) || net_family_is_tcp_ipv4(a->family)) {
             struct in_addr addr_a;
             struct in_addr addr_b;
@@ -1585,6 +1727,8 @@ static int ip_cmp(const IP *_Nonnull a, const IP *_Nonnull b)
     switch (a->family.value) {
         case TOX_AF_UNSPEC:
             return 0;
+        case TOX_AF_ONION:
+            return memcmp(a->ip.onion, b->ip.onion, ONION_V3_ADDRESS_SIZE);
         case TOX_AF_INET:
         case TCP_INET:
         case TOX_TCP_INET:
@@ -1673,6 +1817,30 @@ bool ipport_isset(const IP_Port *ipport)
     return ip_isset(&ipport->ip);
 }
 
+void ip_set_onion(IP *ip, const uint8_t *onion_addr)
+{
+    if (ip == nullptr || onion_addr == nullptr) {
+        return;
+    }
+
+    ip->family.value = TOX_AF_ONION;
+    memcpy(ip->ip.onion, onion_addr, ONION_V3_ADDRESS_SIZE);
+}
+
+bool ip_get_onion(const IP *ip, uint8_t *onion_addr)
+{
+    if (ip == nullptr || onion_addr == nullptr) {
+        return false;
+    }
+
+    if (!net_family_is_onion(ip->family)) {
+        return false;
+    }
+
+    memcpy(onion_addr, ip->ip.onion, ONION_V3_ADDRESS_SIZE);
+    return true;
+}
+
 /** copies an ip structure (careful about direction) */
 void ip_copy(IP *target, const IP *source)
 {
@@ -1727,6 +1895,12 @@ bool bin_pack_ip_port(Bin_Pack *bp, const Logger *logger, const IP_Port *ip_port
     bool is_ipv4;
     uint8_t family;
 
+    if (net_family_is_onion(ip_port->ip.family)) {
+        return bin_pack_u08_b(bp, TOX_AF_ONION)
+               && bin_pack_bin_b(bp, ip_port->ip.ip.onion, SIZE_ONION)
+               && bin_pack_u16_b(bp, net_ntohs(ip_port->port));
+    }
+
     if (net_family_is_ipv4(ip_port->ip.family)) {
         // TODO(irungentoo): use functions to convert endianness
         is_ipv4 = true;
@@ -1779,6 +1953,21 @@ int unpack_ip_port(IP_Port *ip_port, const uint8_t *data, uint16_t length, bool 
 {
     if (data == nullptr) {
         return -1;
+    }
+
+    if (data[0] == TOX_AF_ONION) {
+        const uint32_t size = 1 + SIZE_ONION + sizeof(uint16_t);
+
+        if (size > length) {
+            return -1;
+        }
+
+        ipport_reset(ip_port);
+
+        ip_port->ip.family = net_family_onion();
+        memcpy(ip_port->ip.ip.onion, data + 1, SIZE_ONION);
+        memcpy(&ip_port->port, data + 1 + SIZE_ONION, sizeof(uint16_t));
+        return size;
     }
 
     bool is_ipv4;
@@ -1865,6 +2054,10 @@ bool ip_parse_addr(const IP *ip, char *address, size_t length)
 {
     if (address == nullptr || ip == nullptr) {
         return false;
+    }
+
+    if (net_family_is_onion(ip->family)) {
+        return onion_addr_to_string(ip->ip.onion, address, length) != nullptr;
     }
 
     if (net_family_is_ipv4(ip->family) || net_family_is_tcp_ipv4(ip->family)) {

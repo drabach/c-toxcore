@@ -27,7 +27,7 @@
 
 // toxcore
 #include "../../../toxcore/DHT.h"
-#include "../../../toxcore/LAN_discovery.h"
+#include "../../../toxcore/tor_transport.h"
 #include "../../../toxcore/TCP_server.h"
 #include "../../../toxcore/announce.h"
 #include "../../../toxcore/ccompat.h"
@@ -305,39 +305,27 @@ int main(int argc, char *argv[])
         logger_callback_log(logger, toxcore_logger_callback, nullptr, nullptr);
     }
 
-    const uint16_t end_port = start_port + (TOX_PORTRANGE_TO - TOX_PORTRANGE_FROM);
-    Networking_Core *net = new_networking_ex(logger, mem, ns, &ip, start_port, end_port, nullptr);
-
-    if (net == nullptr) {
-        if (enable_ipv6 && enable_ipv4_fallback) {
-            log_write(LOG_LEVEL_WARNING, "Couldn't initialize IPv6 networking. Falling back to using IPv4.\n");
-            enable_ipv6 = false;
-            ip_init(&ip, enable_ipv6);
-            net = new_networking_ex(logger, mem, ns, &ip, start_port, end_port, nullptr);
-
-            if (net == nullptr) {
-                log_write(LOG_LEVEL_ERROR, "Couldn't fallback to IPv4. Exiting.\n");
-                logger_kill(logger);
-                free(motd);
-                free(tcp_relay_ports);
-                free(keys_file_path);
-                return 1;
-            }
-        } else {
-            log_write(LOG_LEVEL_ERROR, "Couldn't initialize networking. Exiting.\n");
-            logger_kill(logger);
-            free(motd);
-            free(tcp_relay_ports);
-            free(keys_file_path);
-            return 1;
-        }
-    }
-
     Mono_Time *const mono_time = mono_time_new(mem, nullptr, nullptr);
 
     if (mono_time == nullptr) {
         log_write(LOG_LEVEL_ERROR, "Couldn't initialize monotonic timer. Exiting.\n");
-        kill_networking(net);
+        logger_kill(logger);
+        free(motd);
+        free(tcp_relay_ports);
+        free(keys_file_path);
+        return 1;
+    }
+
+    Tor_Transport_Config tor_cfg;
+    memset(&tor_cfg, 0, sizeof(tor_cfg));
+    snprintf(tor_cfg.proxy_host, sizeof(tor_cfg.proxy_host), "127.0.0.1");
+    tor_cfg.proxy_port = 9050;
+
+    Tor_Transport *tran = tor_transport_new(logger, mem, mono_time, rng, ns, &tor_cfg);
+
+    if (tran == nullptr) {
+        log_write(LOG_LEVEL_ERROR, "Couldn't initialize Tor transport. Exiting.\n");
+        mono_time_free(mem, mono_time);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -347,12 +335,12 @@ int main(int argc, char *argv[])
 
     mono_time_update(mono_time);
 
-    DHT *const dht = new_dht(logger, mem, rng, ns, mono_time, net, true, enable_lan_discovery);
+    DHT *const dht = new_dht(logger, mem, rng, ns, mono_time, tran);
 
     if (dht == nullptr) {
         log_write(LOG_LEVEL_ERROR, "Couldn't initialize Tox DHT instance. Exiting.\n");
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -366,7 +354,7 @@ int main(int argc, char *argv[])
         log_write(LOG_LEVEL_ERROR, "Couldn't initialize forwarding. Exiting.\n");
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -381,7 +369,7 @@ int main(int argc, char *argv[])
         kill_forwarding(forwarding);
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -397,7 +385,7 @@ int main(int argc, char *argv[])
         kill_forwarding(forwarding);
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -414,7 +402,7 @@ int main(int argc, char *argv[])
         kill_forwarding(forwarding);
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -432,7 +420,7 @@ int main(int argc, char *argv[])
         kill_forwarding(forwarding);
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(motd);
         free(tcp_relay_ports);
@@ -443,7 +431,7 @@ int main(int argc, char *argv[])
     gca_onion_init(group_announce, onion_a);
 
     if (enable_motd) {
-        if (bootstrap_set_callbacks(dht_get_net(dht), DAEMON_VERSION_NUMBER, (uint8_t *)motd, strlen(motd) + 1) == 0) {
+        if (bootstrap_set_callbacks(dht_get_transport(dht), DAEMON_VERSION_NUMBER, (uint8_t *)motd, strlen(motd) + 1) == 0) {
             log_write(LOG_LEVEL_INFO, "Set MOTD successfully.\n");
             free(motd);
         } else {
@@ -455,7 +443,7 @@ int main(int argc, char *argv[])
             kill_forwarding(forwarding);
             kill_dht(dht);
             mono_time_free(mem, mono_time);
-            kill_networking(net);
+            tor_transport_kill(tran);
             logger_kill(logger);
             free(motd);
             free(tcp_relay_ports);
@@ -476,7 +464,7 @@ int main(int argc, char *argv[])
         kill_forwarding(forwarding);
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         free(tcp_relay_ports);
         free(keys_file_path);
@@ -495,7 +483,7 @@ int main(int argc, char *argv[])
             kill_onion(onion);
             kill_dht(dht);
             mono_time_free(mem, mono_time);
-            kill_networking(net);
+            tor_transport_kill(tran);
             logger_kill(logger);
             free(tcp_relay_ports);
             return 1;
@@ -543,7 +531,7 @@ int main(int argc, char *argv[])
             kill_forwarding(forwarding);
             kill_dht(dht);
             mono_time_free(mem, mono_time);
-            kill_networking(net);
+            tor_transport_kill(tran);
             logger_kill(logger);
             return 1;
         }
@@ -561,24 +549,14 @@ int main(int argc, char *argv[])
         kill_forwarding(forwarding);
         kill_dht(dht);
         mono_time_free(mem, mono_time);
-        kill_networking(net);
+        tor_transport_kill(tran);
         logger_kill(logger);
         return 1;
     }
 
     print_public_key(dht_get_self_public_key(dht));
 
-    uint64_t last_lan_discovery = 0;
-    const uint16_t net_htons_port = net_htons(start_port);
-
     bool waiting_for_dht_connection = true;
-
-    Broadcast_Info *broadcast = nullptr;
-
-    if (enable_lan_discovery) {
-        broadcast = lan_discovery_init(mem, ns);
-        log_write(LOG_LEVEL_INFO, "Initialized LAN discovery successfully.\n");
-    }
 
     struct sigaction sa;
 
@@ -603,18 +581,13 @@ int main(int argc, char *argv[])
 
         do_dht(dht);
 
-        if (enable_lan_discovery && mono_time_is_timeout(mono_time, last_lan_discovery, LAN_DISCOVERY_INTERVAL)) {
-            lan_discovery_send(dht_get_net(dht), broadcast, dht_get_self_public_key(dht), net_htons_port);
-            last_lan_discovery = mono_time_get(mono_time);
-        }
-
         do_gca(mono_time, group_announce);
 
         if (enable_tcp_relay) {
             do_tcp_server(tcp_server, mono_time);
         }
 
-        networking_poll(dht_get_net(dht), nullptr);
+        tor_transport_iterate(dht_get_transport(dht), nullptr);
 
         if (waiting_for_dht_connection && dht_isconnected(dht)) {
             log_write(LOG_LEVEL_INFO, "Connected to another bootstrap node successfully.\n");
@@ -637,7 +610,6 @@ int main(int argc, char *argv[])
             log_write(LOG_LEVEL_INFO, "Received (%ld) signal. Exiting.\n", (long)caught_signal);
     }
 
-    lan_discovery_kill(broadcast);
     kill_tcp_server(tcp_server);
     kill_onion_announce(onion_a);
     kill_gca(group_announce);
@@ -646,7 +618,7 @@ int main(int argc, char *argv[])
     kill_forwarding(forwarding);
     kill_dht(dht);
     mono_time_free(mem, mono_time);
-    kill_networking(net);
+    tor_transport_kill(tran);
     logger_kill(logger);
 
     return 0;

@@ -17,7 +17,6 @@ cc_binary(
         ":bootstrap_node_packets",
         "//c-toxcore/testing:misc_tools",
         "//c-toxcore/toxcore:DHT",
-        "//c-toxcore/toxcore:LAN_discovery",
         "//c-toxcore/toxcore:Messenger",
         "//c-toxcore/toxcore:TCP_server",
         "//c-toxcore/toxcore:ccompat",

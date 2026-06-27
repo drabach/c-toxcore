@@ -12,9 +12,10 @@
 #define C_TOXCORE_OTHER_BOOTSTRAP_NODE_PACKETS_H
 
 #include "../toxcore/network.h"
+#include "../toxcore/tor_transport.h"
 
 #define MAX_MOTD_LENGTH 256 /* I recommend you use a maximum of 96 bytes. The hard maximum is this though. */
 
-int bootstrap_set_callbacks(Networking_Core *net, uint32_t version, const uint8_t *motd, uint16_t motd_length);
+int bootstrap_set_callbacks(Tor_Transport *tran, uint32_t version, const uint8_t *motd, uint16_t motd_length);
 
 #endif // C_TOXCORE_OTHER_BOOTSTRAP_NODE_PACKETS_H

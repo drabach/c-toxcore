@@ -12,6 +12,7 @@
 #include "mem.h"
 #include "mono_time.h"
 #include "network.h"
+#include "tor_transport.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +45,7 @@ DHT *_Nonnull forwarding_get_dht(const Forwarding *_Nonnull forwarding);
  *
  * @return true on success, false otherwise.
  */
-bool send_forward_request(const Networking_Core *_Nonnull net, const IP_Port *_Nonnull forwarder, const uint8_t *_Nonnull chain_keys, uint16_t chain_length, const uint8_t *_Nonnull data,
+bool send_forward_request(const Tor_Transport *_Nonnull tran, const IP_Port *_Nonnull forwarder, const uint8_t *_Nonnull chain_keys, uint16_t chain_length, const uint8_t *_Nonnull data,
                           uint16_t data_length);
 
 /** Returns size of packet written by create_forward_chain_packet. */
@@ -73,7 +74,7 @@ bool create_forward_chain_packet(const uint8_t *_Nonnull chain_keys, uint16_t ch
  *
  * @return true on success, false otherwise.
  */
-bool forward_reply(const Networking_Core *_Nonnull net, const IP_Port *_Nonnull forwarder, const uint8_t *_Nonnull sendback, uint16_t sendback_length, const uint8_t *_Nonnull data,
+bool forward_reply(const Tor_Transport *_Nonnull tran, const IP_Port *_Nonnull forwarder, const uint8_t *_Nonnull sendback, uint16_t sendback_length, const uint8_t *_Nonnull data,
                    uint16_t length);
 
 /**

@@ -10,7 +10,6 @@ cc_binary(
     deps = [
         "//c-toxcore/other:bootstrap_node_packets",
         "//c-toxcore/toxcore:DHT",
-        "//c-toxcore/toxcore:LAN_discovery",
         "//c-toxcore/toxcore:TCP_server",
         "//c-toxcore/toxcore:announce",
         "//c-toxcore/toxcore:attributes",

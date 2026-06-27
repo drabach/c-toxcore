@@ -55,7 +55,7 @@ static bool bootstrap_tox(Tox *tox)
 
 static void tox_connection_callback(Tox *tox, Tox_Connection connection, void *userdata)
 {
-    if (connection == TOX_CONNECTION_UDP) {
+    if (connection == TOX_CONNECTION_TCP) {
         printf("Connected to the tox network.\n");
         *(bool *)userdata = true;
     }

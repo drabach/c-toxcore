@@ -101,9 +101,6 @@ typedef enum Packet_Id {
  */
 #define MAX_NUM_SENDPACKET_TRIES 8
 
-/** The timeout of no received UDP packets before the direct UDP connection is considered dead. */
-#define UDP_DIRECT_TIMEOUT 8
-
 #define MAX_TCP_CONNECTIONS 64
 #define MAX_TCP_RELAYS_PEER 4
 

@@ -19,6 +19,7 @@
 #include "mono_time.h"
 #include "network.h"
 #include "ping_array.h"
+#include "tor_transport.h"
 
 #define PING_NUM_MAX 512
 
@@ -83,7 +84,7 @@ void ping_send_request(Ping *ping, const IP_Port *ipp, const uint8_t *public_key
     }
 
     // We never check this return value and failures in sendpacket are already logged
-    sendpacket(dht_get_net(ping->dht), ipp, pk, sizeof(pk));
+    tor_transport_send(dht_get_transport(ping->dht), ipp->ip.ip.onion, ipp->port, public_key, pk, sizeof(pk));
 }
 
 static int ping_send_response(const Ping *_Nonnull ping, const IP_Port *_Nonnull ipp, const uint8_t *_Nonnull public_key, uint64_t ping_id, const uint8_t *_Nonnull shared_encryption_key)
@@ -112,21 +113,21 @@ static int ping_send_response(const Ping *_Nonnull ping, const IP_Port *_Nonnull
         return 1;
     }
 
-    return sendpacket(dht_get_net(ping->dht), ipp, pk, sizeof(pk));
+    return tor_transport_send(dht_get_transport(ping->dht), ipp->ip.ip.onion, ipp->port, public_key, pk, sizeof(pk));
 }
 
-static int handle_ping_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
+static void handle_ping_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
 {
     DHT *dht = (DHT *)object;
 
     if (length != DHT_PING_SIZE) {
-        return 1;
+        return;
     }
 
     Ping *ping = dht_get_ping(dht);
 
     if (pk_equal(packet + 1, dht_get_self_public_key(ping->dht))) {
-        return 1;
+        return;
     }
 
     const uint8_t *shared_key = dht_get_shared_key_recv(dht, packet + 1);
@@ -141,11 +142,11 @@ static int handle_ping_request(void *_Nonnull object, const IP_Port *_Nonnull so
                                           ping_plain);
 
     if (rc != sizeof(ping_plain)) {
-        return 1;
+        return;
     }
 
     if (ping_plain[0] != NET_PACKET_PING_REQUEST) {
-        return 1;
+        return;
     }
 
     uint64_t ping_id;
@@ -153,23 +154,20 @@ static int handle_ping_request(void *_Nonnull object, const IP_Port *_Nonnull so
     // Send response
     ping_send_response(ping, source, packet + 1, ping_id, shared_key);
     ping_add(ping, packet + 1, source);
-
-    return 0;
 }
 
-static int handle_ping_response(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
+static void handle_ping_response(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nonnull userdata)
 {
     DHT      *dht = (DHT *)object;
-    int       rc;
 
     if (length != DHT_PING_SIZE) {
-        return 1;
+        return;
     }
 
     Ping *ping = dht_get_ping(dht);
 
     if (pk_equal(packet + 1, dht_get_self_public_key(ping->dht))) {
-        return 1;
+        return;
     }
 
     // generate key to encrypt ping_id with recipient privkey
@@ -177,18 +175,18 @@ static int handle_ping_response(void *_Nonnull object, const IP_Port *_Nonnull s
 
     uint8_t ping_plain[PING_PLAIN_SIZE];
     // Decrypt ping_id
-    rc = decrypt_data_symmetric(ping->mem, shared_key,
-                                packet + 1 + CRYPTO_PUBLIC_KEY_SIZE,
-                                packet + 1 + CRYPTO_PUBLIC_KEY_SIZE + CRYPTO_NONCE_SIZE,
-                                PING_PLAIN_SIZE + CRYPTO_MAC_SIZE,
-                                ping_plain);
+    const int rc = decrypt_data_symmetric(ping->mem, shared_key,
+                                          packet + 1 + CRYPTO_PUBLIC_KEY_SIZE,
+                                          packet + 1 + CRYPTO_PUBLIC_KEY_SIZE + CRYPTO_NONCE_SIZE,
+                                          PING_PLAIN_SIZE + CRYPTO_MAC_SIZE,
+                                          ping_plain);
 
     if (rc != sizeof(ping_plain)) {
-        return 1;
+        return;
     }
 
     if (ping_plain[0] != NET_PACKET_PING_RESPONSE) {
-        return 1;
+        return;
     }
 
     uint64_t   ping_id;
@@ -196,22 +194,21 @@ static int handle_ping_response(void *_Nonnull object, const IP_Port *_Nonnull s
     uint8_t data[PING_DATA_SIZE];
 
     if (ping_array_check(ping->ping_array, ping->mono_time, data, sizeof(data), ping_id) != sizeof(data)) {
-        return 1;
+        return;
     }
 
     if (!pk_equal(packet + 1, data)) {
-        return 1;
+        return;
     }
 
     IP_Port ipp;
     memcpy(&ipp, data + CRYPTO_PUBLIC_KEY_SIZE, sizeof(IP_Port));
 
     if (!ipport_equal(&ipp, source)) {
-        return 1;
+        return;
     }
 
     addto_lists(dht, source, packet + 1);
-    return 0;
 }
 
 /** @brief Check if public_key with ip_port is in the list.
@@ -223,16 +220,8 @@ static bool in_list(const Client_data *_Nonnull list, uint16_t length, const Mon
 {
     for (unsigned int i = 0; i < length; ++i) {
         if (pk_equal(list[i].public_key, public_key)) {
-            const IPPTsPng *ipptp;
-
-            if (net_family_is_ipv4(ip_port->ip.family)) {
-                ipptp = &list[i].assoc4;
-            } else {
-                ipptp = &list[i].assoc6;
-            }
-
-            if (!mono_time_is_timeout(mono_time, ipptp->timestamp, BAD_NODE_TIMEOUT)
-                    && ipport_equal(&ipptp->ip_port, ip_port)) {
+            if (!mono_time_is_timeout(mono_time, list[i].timestamp, BAD_NODE_TIMEOUT)
+                    && ipport_equal(&list[i].ip_port, ip_port)) {
                 return true;
             }
         }
@@ -343,8 +332,8 @@ Ping *ping_new(const Memory *mem, const Mono_Time *mono_time, const Random *rng,
     ping->rng = rng;
     ping->mem = mem;
     ping->dht = dht;
-    networking_registerhandler(dht_get_net(ping->dht), NET_PACKET_PING_REQUEST, &handle_ping_request, dht);
-    networking_registerhandler(dht_get_net(ping->dht), NET_PACKET_PING_RESPONSE, &handle_ping_response, dht);
+    tor_transport_register_handler(dht_get_transport(ping->dht), NET_PACKET_PING_REQUEST, &handle_ping_request, dht);
+    tor_transport_register_handler(dht_get_transport(ping->dht), NET_PACKET_PING_RESPONSE, &handle_ping_response, dht);
 
     return ping;
 }
@@ -355,8 +344,8 @@ void ping_kill(const Memory *mem, Ping *ping)
         return;
     }
 
-    networking_registerhandler(dht_get_net(ping->dht), NET_PACKET_PING_REQUEST, nullptr, nullptr);
-    networking_registerhandler(dht_get_net(ping->dht), NET_PACKET_PING_RESPONSE, nullptr, nullptr);
+    tor_transport_register_handler(dht_get_transport(ping->dht), NET_PACKET_PING_REQUEST, nullptr, nullptr);
+    tor_transport_register_handler(dht_get_transport(ping->dht), NET_PACKET_PING_RESPONSE, nullptr, nullptr);
     ping_array_kill(ping->ping_array);
 
     mem_delete(mem, ping);

@@ -295,8 +295,6 @@ set(toxcore_SOURCES
   toxcore/group_onion_announce.h
   toxcore/group_pack.c
   toxcore/group_pack.h
-  toxcore/LAN_discovery.c
-  toxcore/LAN_discovery.h
   toxcore/list.c
   toxcore/list.h
   toxcore/logger.c
@@ -338,6 +336,8 @@ set(toxcore_SOURCES
   toxcore/TCP_server.c
   toxcore/TCP_server.h
   toxcore/timed_auth.c
+  toxcore/tor_transport.c
+  toxcore/tor_transport.h
   toxcore/timed_auth.h
   toxcore/tox_api.c
   toxcore/tox.c
@@ -574,6 +574,8 @@ if(UNITTEST AND TARGET GTest::gtest AND TARGET GTest::gmock)
   unit_test(toxcore list)
   unit_test(toxcore mem)
   unit_test(toxcore mono_time)
+  unit_test(toxcore network)
+  unit_test(toxcore tor_transport)
   unit_test(toxcore ping_array)
   unit_test(toxcore test_util)
   unit_test(toxcore tox)

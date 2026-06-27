@@ -154,7 +154,11 @@ static void test_av_flows(void)
     {
         Tox_Err_New error;
 
-        bootstrap = tox_new_log(nullptr, &error, &index[0]);
+        struct Tox_Options *bopts = tox_options_new(nullptr);
+        ck_assert(bopts != nullptr);
+        tox_options_set_tcp_port(bopts, 33455);
+        bootstrap = tox_new_log(bopts, &error, &index[0]);
+        tox_options_free(bopts);
         ck_assert(error == TOX_ERR_NEW_OK);
 
         alice = tox_new_log(nullptr, &error, &index[1]);
@@ -176,10 +180,14 @@ static void test_av_flows(void)
     printf("bootstrapping Alice and Bob off a third bootstrap node\n");
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(bootstrap, dht_key);
-    const uint16_t dht_port = tox_self_get_udp_port(bootstrap, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(bootstrap, nullptr);
 
-    tox_bootstrap(alice, "localhost", dht_port, dht_key, nullptr);
-    tox_bootstrap(bob, "localhost", dht_port, dht_key, nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
+
+    tox_bootstrap(alice, "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(alice, "localhost", tcp_port, dht_key, nullptr);
+    tox_bootstrap(bob, "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(bob, "localhost", tcp_port, dht_key, nullptr);
 
     ck_assert(tox_friend_add(bob, address, (const uint8_t *)"gentoo", 7, nullptr) != (uint32_t) -1);
 
@@ -195,8 +203,8 @@ static void test_av_flows(void)
             off = 0;
         }
 
-        if (tox_friend_get_connection_status(alice, 0, nullptr) == TOX_CONNECTION_UDP &&
-                tox_friend_get_connection_status(bob, 0, nullptr) == TOX_CONNECTION_UDP) {
+        if (tox_friend_get_connection_status(alice, 0, nullptr) == TOX_CONNECTION_TCP &&
+                tox_friend_get_connection_status(bob, 0, nullptr) == TOX_CONNECTION_TCP) {
             break;
         }
 

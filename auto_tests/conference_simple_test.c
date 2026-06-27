@@ -145,8 +145,12 @@ int main(void)
     State state2 = {2};
     State state3 = {3};
 
-    // Create toxes.
-    state1.tox = tox_new_log(nullptr, nullptr, &state1.id);
+    // Create toxes. state1 has TCP relay enabled.
+    struct Tox_Options *opts1 = tox_options_new(nullptr);
+    ck_assert(opts1 != nullptr);
+    tox_options_set_tcp_port(opts1, 33455);
+    state1.tox = tox_new_log(opts1, nullptr, &state1.id);
+    tox_options_free(opts1);
     state2.tox = tox_new_log(nullptr, nullptr, &state2.id);
     state3.tox = tox_new_log(nullptr, nullptr, &state3.id);
 
@@ -168,10 +172,12 @@ int main(void)
     printf("bootstrapping tox2 and tox3 off tox1\n");
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(state1.tox, dht_key);
-    const uint16_t dht_port = tox_self_get_udp_port(state1.tox, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(state1.tox, nullptr);
 
-    tox_bootstrap(state2.tox, "localhost", dht_port, dht_key, nullptr);
-    tox_bootstrap(state3.tox, "localhost", dht_port, dht_key, nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
+
+    tox_bootstrap(state2.tox, "localhost", tcp_port, dht_key, nullptr);
+    tox_bootstrap(state3.tox, "localhost", tcp_port, dht_key, nullptr);
 
     Tox_Dispatch *dispatch = tox_dispatch_new(nullptr);
     ck_assert(dispatch != nullptr);

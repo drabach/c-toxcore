@@ -160,7 +160,11 @@ static void file_transfer_test(void)
     uint32_t index[] = { 1, 2, 3 };
     long long unsigned int cur_time = time(nullptr);
     Tox_Err_New t_n_error;
-    Tox *tox1 = tox_new_log(nullptr, &t_n_error, &index[0]);
+    struct Tox_Options *opts1 = tox_options_new(nullptr);
+    ck_assert(opts1 != nullptr);
+    tox_options_set_tcp_port(opts1, 33456);
+    Tox *tox1 = tox_new_log(opts1, &t_n_error, &index[0]);
+    tox_options_free(opts1);
     ck_assert_msg(t_n_error == TOX_ERR_NEW_OK, "wrong error");
     Tox *tox2 = tox_new_log(nullptr, &t_n_error, &index[1]);
     ck_assert_msg(t_n_error == TOX_ERR_NEW_OK, "wrong error");
@@ -177,10 +181,11 @@ static void file_transfer_test(void)
 
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(tox1, dht_key);
-    uint16_t dht_port = tox_self_get_udp_port(tox1, nullptr);
+    uint16_t tcp_port = tox_self_get_tcp_port(tox1, nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
 
-    tox_bootstrap(tox2, TOX_LOCALHOST, dht_port, dht_key, nullptr);
-    tox_bootstrap(tox3, TOX_LOCALHOST, dht_port, dht_key, nullptr);
+    tox_bootstrap(tox2, TOX_LOCALHOST, tcp_port, dht_key, nullptr);
+    tox_bootstrap(tox3, TOX_LOCALHOST, tcp_port, dht_key, nullptr);
 
     printf("Waiting for toxes to come online\n");
 

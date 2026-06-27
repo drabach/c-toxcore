@@ -63,12 +63,20 @@ static void test_tox_events(void)
     Tox *toxes[2];
     uint32_t index[2];
 
-    for (uint32_t i = 0; i < 2; ++i) {
-        index[i] = i + 1;
-        toxes[i] = tox_new_log(nullptr, nullptr, &index[i]);
-        tox_events_init(toxes[i]);
-        ck_assert_msg(toxes[i] != nullptr, "failed to create tox instances %u", i);
-    }
+    struct Tox_Options *opts0 = tox_options_new(nullptr);
+    ck_assert(opts0 != nullptr);
+    tox_options_set_tcp_port(opts0, 33455);
+
+    index[0] = 1;
+    toxes[0] = tox_new_log(opts0, nullptr, &index[0]);
+    tox_options_free(opts0);
+    tox_events_init(toxes[0]);
+    ck_assert_msg(toxes[0] != nullptr, "failed to create tox instance 0");
+
+    index[1] = 2;
+    toxes[1] = tox_new_log(nullptr, nullptr, &index[1]);
+    tox_events_init(toxes[1]);
+    ck_assert_msg(toxes[1] != nullptr, "failed to create tox instance 1");
 
     uint64_t clock = current_time_monotonic(toxes[0]->mono_time);
     Mono_Time *mono_time;
@@ -80,7 +88,10 @@ static void test_tox_events(void)
 
     uint8_t pk[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(toxes[0], pk);
-    tox_bootstrap(toxes[1], "localhost", tox_self_get_udp_port(toxes[0], nullptr), pk, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(toxes[0], nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
+    tox_bootstrap(toxes[1], "localhost", tcp_port, pk, nullptr);
+    tox_add_tcp_relay(toxes[1], "localhost", tcp_port, pk, nullptr);
 
     tox_self_get_public_key(toxes[0], pk);
     tox_friend_add_norequest(toxes[1], pk, nullptr);
@@ -112,8 +123,7 @@ static void test_tox_events(void)
         c_sleep(5);
     }
 
-    printf("friends are connected via %s, now sending message\n",
-           tox_friend_get_connection_status(toxes[0], 0, nullptr) == TOX_CONNECTION_TCP ? "TCP" : "UDP");
+    printf("friends are connected, now sending message\n");
 
     Tox_Err_Friend_Send_Message err;
     tox_friend_send_message(toxes[0], 0, TOX_MESSAGE_TYPE_NORMAL, message, sizeof(message), &err);

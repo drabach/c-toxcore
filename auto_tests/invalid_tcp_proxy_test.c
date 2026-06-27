@@ -15,7 +15,6 @@ int main(void)
     setvbuf(stdout, nullptr, _IONBF, 0);
 
     struct Tox_Options *opts = tox_options_new(nullptr);
-    tox_options_set_udp_enabled(opts, false);
     tox_options_set_proxy_type(opts, TOX_PROXY_TYPE_SOCKS5);
     tox_options_set_proxy_host(opts, "127.0.0.1");
     tox_options_set_proxy_port(opts, 51724);

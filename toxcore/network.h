@@ -189,6 +189,8 @@ typedef enum Net_Packet_Type {
 
 #define SIZE_IP4 4
 #define SIZE_IP6 16
+#define ONION_V3_ADDRESS_SIZE 35
+#define SIZE_ONION ONION_V3_ADDRESS_SIZE
 #define SIZE_IP (1 + SIZE_IP6)
 #define SIZE_PORT 2
 #define SIZE_IPPORT (SIZE_IP + SIZE_PORT)
@@ -213,8 +215,9 @@ IP6 get_ip6_loopback(void);
 IP6 get_ip6_broadcast(void);
 
 typedef union IP_Union {
-    IP4 v4;
-    IP6 v6;
+    IP4     v4;
+    IP6     v6;
+    uint8_t onion[ONION_V3_ADDRESS_SIZE];
 } IP_Union;
 
 typedef struct IP {
@@ -320,6 +323,32 @@ typedef struct Ip_Ntoa {
  * @return Pointer to the buffer inside `ip_str` containing the IP string.
  */
 const char *_Nonnull net_ip_ntoa(const IP *_Nonnull ip, Ip_Ntoa *_Nonnull ip_str);
+
+/** @brief Decode a .onion hostname string to a 35-byte onion address.
+ *
+ * @param host The hostname string (e.g. "x.onion", with or without trailing ".onion").
+ * @param addr Output buffer of ONION_V3_ADDRESS_SIZE bytes.
+ * @return true on success.
+ */
+bool onion_addr_from_string(const char *_Nonnull host, uint8_t *_Nonnull addr);
+
+/** @brief Encode a 35-byte onion address to a .onion hostname string.
+ *
+ * @param addr The 35-byte onion address.
+ * @param buf Output buffer (must be at least ONION_V3_ADDRESS_SIZE * 8 / 5 + 8 bytes).
+ * @param bufsz Size of the output buffer.
+ * @return Pointer to buf containing the .onion string, or nullptr on failure.
+ */
+const char *_Nonnull onion_addr_to_string(const uint8_t *_Nonnull addr, char *_Nonnull buf, size_t bufsz);
+
+/** @brief Set the IP to an onion address. */
+void ip_set_onion(IP *_Nonnull ip, const uint8_t *_Nonnull onion_addr);
+
+/** @brief Get the onion address from an IP (family must be TOX_AF_ONION).
+ *
+ * @return true if the IP family is onion and the address was copied.
+ */
+bool ip_get_onion(const IP *_Nonnull ip, uint8_t *_Nonnull onion_addr);
 
 /**
  * Parses IP structure into an address string.

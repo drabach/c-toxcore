@@ -593,16 +593,6 @@ typedef enum Tox_Connection {
      */
     TOX_CONNECTION_TCP,
 
-    /**
-     * @brief A UDP connection has been established.
-     *
-     * For the own instance, this means it is able to send UDP packets to DHT
-     * nodes, but may still be connected to a TCP relay. For a friend, this
-     * means that the connection to that particular friend was built using
-     * direct UDP packets.
-     */
-    TOX_CONNECTION_UDP,
-
 } Tox_Connection;
 
 const char *tox_connection_to_string(Tox_Connection value);
@@ -2966,11 +2956,6 @@ const char *tox_err_get_port_to_string(Tox_Err_Get_Port value);
  *   parameter is NULL, this function has no effect.
  */
 void tox_self_get_dht_id(const Tox *tox, uint8_t dht_id[TOX_PUBLIC_KEY_SIZE]);
-
-/**
- * @brief Return the UDP port this Tox instance is bound to.
- */
-uint16_t tox_self_get_udp_port(const Tox *tox, Tox_Err_Get_Port *error);
 
 /**
  * @brief Return the TCP port this Tox instance is bound to.

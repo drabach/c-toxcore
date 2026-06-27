@@ -33,7 +33,12 @@ static void test_set_name(void)
     printf("initialising 2 toxes\n");
     uint32_t index[] = { 1, 2 };
     const time_t cur_time = time(nullptr);
-    Tox *const tox1 = tox_new_log(nullptr, nullptr, &index[0]);
+
+    struct Tox_Options *opts1 = tox_options_new(nullptr);
+    ck_assert(opts1 != nullptr);
+    tox_options_set_tcp_port(opts1, 33455);
+    Tox *const tox1 = tox_new_log(opts1, nullptr, &index[0]);
+    tox_options_free(opts1);
     Tox *const tox2 = tox_new_log(nullptr, nullptr, &index[1]);
 
     ck_assert_msg(tox1 && tox2, "failed to create 2 tox instances");
@@ -54,9 +59,12 @@ static void test_set_name(void)
     printf("bootstrapping tox2 off tox1\n");
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(tox1, dht_key);
-    const uint16_t dht_port = tox_self_get_udp_port(tox1, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(tox1, nullptr);
 
-    tox_bootstrap(tox2, "localhost", dht_port, dht_key, nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
+
+    tox_bootstrap(tox2, "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(tox2, "localhost", tcp_port, dht_key, nullptr);
 
     do {
         tox_iterate(tox1, nullptr);
@@ -84,8 +92,8 @@ static void test_set_name(void)
         tox_events_free(events);
 
         c_sleep(ITERATION_INTERVAL);
-    } while (tox_friend_get_connection_status(tox1, 0, nullptr) != TOX_CONNECTION_UDP ||
-             tox_friend_get_connection_status(tox2, 0, nullptr) != TOX_CONNECTION_UDP);
+    } while (tox_friend_get_connection_status(tox1, 0, nullptr) != TOX_CONNECTION_TCP ||
+             tox_friend_get_connection_status(tox2, 0, nullptr) != TOX_CONNECTION_TCP);
 
     printf("tox clients connected took %lu seconds\n", (unsigned long)(time(nullptr) - con_time));
 

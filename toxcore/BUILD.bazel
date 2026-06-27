@@ -463,26 +463,6 @@ cc_test(
 )
 
 cc_library(
-    name = "LAN_discovery",
-    srcs = ["LAN_discovery.c"],
-    hdrs = ["LAN_discovery.h"],
-    visibility = [
-        "//c-toxcore/other:__pkg__",
-        "//c-toxcore/other/bootstrap_daemon:__pkg__",
-        "//c-toxcore/testing:__pkg__",
-    ],
-    deps = [
-        ":attributes",
-        ":ccompat",
-        ":crypto_core",
-        ":mem",
-        ":network",
-        ":util",
-        "@psocket",
-    ],
-)
-
-cc_library(
     name = "DHT",
     srcs = [
         "DHT.c",
@@ -498,7 +478,6 @@ cc_library(
         "//c-toxcore/testing:__pkg__",
     ],
     deps = [
-        ":LAN_discovery",
         ":attributes",
         ":bin_pack",
         ":ccompat",
@@ -631,7 +610,6 @@ cc_library(
     ],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":attributes",
         ":ccompat",
         ":crypto_core",
@@ -758,7 +736,6 @@ cc_library(
     ],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":TCP_client",
         ":TCP_connection",
         ":attributes",
@@ -804,7 +781,6 @@ cc_library(
     ],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":attributes",
         ":ccompat",
         ":crypto_core",
@@ -831,7 +807,6 @@ cc_library(
     ],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":attributes",
         ":ccompat",
         ":crypto_core",
@@ -904,7 +879,6 @@ cc_library(
     visibility = ["//c-toxcore/auto_tests:__pkg__"],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":TCP_connection",
         ":attributes",
         ":ccompat",
@@ -932,7 +906,6 @@ cc_library(
     visibility = ["//c-toxcore/auto_tests:__pkg__"],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":TCP_connection",
         ":attributes",
         ":ccompat",
@@ -1043,7 +1016,6 @@ cc_library(
     ],
     deps = [
         ":DHT",
-        ":LAN_discovery",
         ":TCP_client",
         ":TCP_connection",
         ":TCP_server",

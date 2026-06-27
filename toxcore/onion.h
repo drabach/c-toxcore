@@ -17,6 +17,7 @@
 #include "mono_time.h"
 #include "network.h"
 #include "shared_key_cache.h"
+#include "tor_transport.h"
 
 typedef int onion_recv_1_cb(void *_Nullable object, const IP_Port *_Nonnull dest, const uint8_t *_Nonnull data, uint16_t length);
 
@@ -26,7 +27,7 @@ typedef struct Onion {
     const Random *_Nonnull rng;
     const Memory *_Nonnull mem;
     DHT *_Nonnull dht;
-    Networking_Core *_Nonnull net;
+    Tor_Transport *_Nonnull tran;
     uint8_t secret_symmetric_key[CRYPTO_SYMMETRIC_KEY_SIZE];
     uint64_t timestamp;
 
@@ -123,7 +124,7 @@ int create_onion_packet_tcp(const Memory *_Nonnull mem, const Random *_Nonnull r
  * return -1 on failure.
  * return 0 on success.
  */
-int send_onion_response(const Logger *_Nonnull log, const Networking_Core *_Nonnull net, const IP_Port *_Nonnull dest, const uint8_t *_Nonnull data, uint16_t length,
+int send_onion_response(const Logger *_Nonnull log, const Tor_Transport *_Nonnull tran, const IP_Port *_Nonnull dest, const uint8_t *_Nonnull data, uint16_t length,
                         const uint8_t *_Nonnull ret);
 
 /** @brief Function to handle/send received decrypted versions of the packet created by create_onion_packet.

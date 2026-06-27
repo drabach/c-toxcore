@@ -258,9 +258,6 @@ const char *tox_connection_to_string(Tox_Connection value)
 
         case TOX_CONNECTION_TCP:
             return "TOX_CONNECTION_TCP";
-
-        case TOX_CONNECTION_UDP:
-            return "TOX_CONNECTION_UDP";
     }
 
     return "<invalid Tox_Connection>";

@@ -18,6 +18,7 @@
 #include "mono_time.h"
 #include "network.h"
 #include "ping_array.h"
+#include "tor_transport.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,11 +66,11 @@ extern "C" {
 
 #define CRYPTO_PACKET_FRIEND_REQ    32  // Friend request crypto packet ID.
 #define CRYPTO_PACKET_DHTPK         156
-#define CRYPTO_PACKET_NAT_PING      254 // NAT ping crypto packet ID.
 
 /* Max size of a packed node for IPV4 and IPV6 respectively */
 #define PACKED_NODE_SIZE_IP4 (1 + SIZE_IP4 + sizeof(uint16_t) + CRYPTO_PUBLIC_KEY_SIZE)
 #define PACKED_NODE_SIZE_IP6 (1 + SIZE_IP6 + sizeof(uint16_t) + CRYPTO_PUBLIC_KEY_SIZE)
+#define PACKED_NODE_SIZE_ONION (1 + SIZE_ONION + sizeof(uint16_t) + CRYPTO_PUBLIC_KEY_SIZE)
 
 /**
  * This define can eventually be removed; it is necessary if a significant
@@ -126,12 +127,8 @@ int create_request(const Memory *_Nonnull mem, const Random *_Nonnull rng, const
 int handle_request(const Memory *_Nonnull mem, const uint8_t *_Nonnull self_public_key, const uint8_t *_Nonnull self_secret_key, uint8_t *_Nonnull public_key, uint8_t *_Nonnull data,
                    uint8_t *_Nonnull request_id, const uint8_t *_Nonnull packet, uint16_t packet_length);
 
-typedef struct IPPTs {
-    IP_Port     ip_port;
-    uint64_t    timestamp;
-} IPPTs;
-
-typedef struct IPPTsPng {
+typedef struct Client_data {
+    uint8_t     public_key[CRYPTO_PUBLIC_KEY_SIZE];
     IP_Port     ip_port;
     uint64_t    timestamp;
     uint64_t    last_pinged;
@@ -141,33 +138,12 @@ typedef struct IPPTsPng {
     uint64_t    ret_timestamp;
     /* true if this ip_port is ours */
     bool        ret_ip_self;
-} IPPTsPng;
-
-typedef struct Client_data {
-    uint8_t     public_key[CRYPTO_PUBLIC_KEY_SIZE];
-    IPPTsPng    assoc4;
-    IPPTsPng    assoc6;
 
 #ifdef CHECK_ANNOUNCE_NODE
     /* Responded to data search? */
     bool        announce_node;
 #endif /* CHECK_ANNOUNCE_NODE */
 } Client_data;
-
-/*----------------------------------------------------------------------------------*/
-
-typedef struct NAT {
-    /* true if currently hole punching */
-    bool        hole_punching;
-    uint32_t    punching_index;
-    uint32_t    tries;
-    uint32_t    punching_index2;
-
-    uint64_t    punching_timestamp;
-    uint64_t    recv_nat_ping_timestamp;
-    uint64_t    nat_ping_id;
-    uint64_t    nat_ping_timestamp;
-} NAT;
 
 typedef struct Node_format {
     uint8_t     public_key[CRYPTO_PUBLIC_KEY_SIZE];
@@ -222,7 +198,7 @@ const uint8_t *_Nonnull dht_get_self_secret_key(const DHT *_Nonnull dht);
 void dht_set_self_public_key(DHT *_Nonnull dht, const uint8_t *_Nonnull key);
 void dht_set_self_secret_key(DHT *_Nonnull dht, const uint8_t *_Nonnull key);
 
-Networking_Core *_Nonnull dht_get_net(const DHT *_Nonnull dht);
+Tor_Transport *_Nonnull dht_get_transport(const DHT *_Nonnull dht);
 struct Ping *_Nonnull dht_get_ping(const DHT *_Nonnull dht);
 const Client_data *_Nonnull dht_get_close_clientlist(const DHT *_Nonnull dht);
 const Client_data *_Nonnull dht_get_close_client(const DHT *_Nonnull dht, uint32_t client_num);
@@ -333,7 +309,7 @@ void set_announce_node(DHT *_Nonnull dht, const uint8_t *_Nonnull public_key);
  *
  * @return the number of nodes returned.
  */
-int get_close_nodes(const DHT *_Nonnull dht, const uint8_t *_Nonnull public_key, Node_format nodes_list[_Nonnull MAX_SENT_NODES], Family sa_family, bool is_lan, bool want_announce);
+int get_close_nodes(const DHT *_Nonnull dht, const uint8_t *_Nonnull public_key, Node_format nodes_list[_Nonnull MAX_SENT_NODES], bool want_announce);
 
 /** @brief Put up to max_num nodes in nodes from the random friends.
  *
@@ -419,8 +395,7 @@ void dht_save(const DHT *_Nonnull dht, uint8_t *_Nonnull data);
 int dht_load(DHT *_Nonnull dht, const uint8_t *_Nonnull data, uint32_t length);
 
 /** Initialize DHT. */
-DHT *_Nullable new_dht(const Logger *_Nonnull log, const Memory *_Nonnull mem, const Random *_Nonnull rng, const Network *_Nonnull ns, Mono_Time *_Nonnull mono_time, Networking_Core *_Nonnull net,
-                       bool hole_punching_enabled, bool lan_discovery_enabled);
+DHT *_Nullable new_dht(const Logger *_Nonnull log, const Memory *_Nonnull mem, const Random *_Nonnull rng, const Network *_Nonnull ns, Mono_Time *_Nonnull mono_time, Tor_Transport *_Nonnull tran);
 
 void kill_dht(DHT *_Nullable dht);
 /**

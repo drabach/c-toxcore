@@ -14,7 +14,6 @@
 #include <string.h>
 
 #include "DHT.h"
-#include "LAN_discovery.h"
 #include "TCP_client.h"
 #include "TCP_connection.h"
 #include "attributes.h"
@@ -347,32 +346,6 @@ static int handle_cookie_request(const Net_Crypto *_Nonnull c, uint8_t *_Nonnull
     return 0;
 }
 
-/** Handle the cookie request packet (for raw UDP) */
-static int udp_handle_cookie_request(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                                     void *_Nullable userdata)
-{
-    const Net_Crypto *c = (const Net_Crypto *)object;
-    uint8_t request_plain[COOKIE_REQUEST_PLAIN_LENGTH];
-    uint8_t shared_key[CRYPTO_SHARED_KEY_SIZE];
-    uint8_t dht_public_key[CRYPTO_PUBLIC_KEY_SIZE];
-
-    if (handle_cookie_request(c, request_plain, shared_key, dht_public_key, packet, length) != 0) {
-        return 1;
-    }
-
-    uint8_t data[COOKIE_RESPONSE_LENGTH];
-
-    if (create_cookie_response(c, data, request_plain, shared_key, dht_public_key) != sizeof(data)) {
-        return 1;
-    }
-
-    if ((uint32_t)sendpacket(dht_get_net(c->dht), source, data, sizeof(data)) != sizeof(data)) {
-        return 1;
-    }
-
-    return 0;
-}
-
 /** Handle the cookie request packet (for TCP) */
 static int tcp_handle_cookie_request(const Net_Crypto *_Nonnull c, int connections_number, const uint8_t *_Nonnull packet, uint16_t length)
 {
@@ -568,142 +541,28 @@ static int add_ip_port_connection(Net_Crypto *_Nonnull c, int crypt_connection_i
         return -1;
     }
 
-    if (net_family_is_ipv4(ip_port->ip.family)) {
-        if (!ipport_equal(ip_port, &conn->ip_portv4) && !ip_is_lan(&conn->ip_portv4.ip)) {
-            if (!bs_list_add(&c->ip_port_list, (const uint8_t *)ip_port, crypt_connection_id)) {
-                return -1;
-            }
-
-            bs_list_remove(&c->ip_port_list, (uint8_t *)&conn->ip_portv4, crypt_connection_id);
-            conn->ip_portv4 = *ip_port;
-            return 0;
-        }
-    } else if (net_family_is_ipv6(ip_port->ip.family)) {
-        if (!ipport_equal(ip_port, &conn->ip_portv6)) {
-            if (!bs_list_add(&c->ip_port_list, (const uint8_t *)ip_port, crypt_connection_id)) {
-                return -1;
-            }
-
-            bs_list_remove(&c->ip_port_list, (uint8_t *)&conn->ip_portv6, crypt_connection_id);
-            conn->ip_portv6 = *ip_port;
-            return 0;
-        }
-    }
+    (void)conn;
 
     return -1;
 }
 
-/** @brief Return the IP_Port that should be used to send packets to the other peer.
- *
- * @retval IP_Port with family 0 on failure.
- * @return IP_Port on success.
- */
-static IP_Port return_ip_port_connection(const Net_Crypto *_Nonnull c, int crypt_connection_id)
-{
-    const IP_Port empty = {{{0}}};
-
-    const Crypto_Connection *conn = get_crypto_connection(c, crypt_connection_id);
-
-    if (conn == nullptr) {
-        return empty;
-    }
-
-    const uint64_t current_time = mono_time_get(c->mono_time);
-    bool v6 = false;
-    bool v4 = false;
-
-    if ((UDP_DIRECT_TIMEOUT + conn->direct_lastrecv_timev4) > current_time) {
-        v4 = true;
-    }
-
-    if ((UDP_DIRECT_TIMEOUT + conn->direct_lastrecv_timev6) > current_time) {
-        v6 = true;
-    }
-
-    /* Prefer IP_Ports which haven't timed out to those which have.
-     * To break ties, prefer ipv4 lan, then ipv6, then non-lan ipv4.
-     */
-    if (v4 && ip_is_lan(&conn->ip_portv4.ip)) {
-        return conn->ip_portv4;
-    }
-
-    if (v6 && net_family_is_ipv6(conn->ip_portv6.ip.family)) {
-        return conn->ip_portv6;
-    }
-
-    if (v4 && net_family_is_ipv4(conn->ip_portv4.ip.family)) {
-        return conn->ip_portv4;
-    }
-
-    if (ip_is_lan(&conn->ip_portv4.ip)) {
-        return conn->ip_portv4;
-    }
-
-    if (net_family_is_ipv6(conn->ip_portv6.ip.family)) {
-        return conn->ip_portv6;
-    }
-
-    if (net_family_is_ipv4(conn->ip_portv4.ip.family)) {
-        return conn->ip_portv4;
-    }
-
-    return empty;
-}
-
-/** @brief Sends a packet to the peer using the fastest route.
+/** @brief Sends a packet to the peer via TCP.
  *
  * @retval -1 on failure.
  * @retval 0 on success.
  */
 static int send_packet_to(const Net_Crypto *_Nonnull c, int crypt_connection_id, const uint8_t *_Nonnull data, uint16_t length)
 {
-// TODO(irungentoo): TCP, etc...
     Crypto_Connection *conn = get_crypto_connection(c, crypt_connection_id);
 
     if (conn == nullptr) {
         return -1;
     }
 
-    bool direct_send_attempt = false;
-
-    const IP_Port ip_port = return_ip_port_connection(c, crypt_connection_id);
-
-    // TODO(irungentoo): on bad networks, direct connections might not last indefinitely.
-    if (!net_family_is_unspec(ip_port.ip.family)) {
-        bool direct_connected = false;
-
-        // FIXME(sudden6): handle return value
-        crypto_connection_status(c, crypt_connection_id, &direct_connected, nullptr);
-
-        if (direct_connected) {
-            if ((uint32_t)sendpacket(dht_get_net(c->dht), &ip_port, data, length) == length) {
-                return 0;
-            }
-
-            LOGGER_WARNING(c->log, "sending packet of length %d failed", length);
-            return -1;
-        }
-
-        // TODO(irungentoo): a better way of sending packets directly to confirm the others ip.
-        const uint64_t current_time = mono_time_get(c->mono_time);
-
-        if ((((UDP_DIRECT_TIMEOUT / 2) + conn->direct_send_attempt_time) < current_time && length < 96)
-                || data[0] == NET_PACKET_COOKIE_REQUEST || data[0] == NET_PACKET_CRYPTO_HS) {
-            if ((uint32_t)sendpacket(dht_get_net(c->dht), &ip_port, data, length) == length) {
-                direct_send_attempt = true;
-                conn->direct_send_attempt_time = mono_time_get(c->mono_time);
-            }
-        }
-    }
-
     const int ret = send_packet_tcp_connection(c->tcp_c, conn->connection_number_tcp, data, length);
 
     if (ret == 0) {
         conn->last_tcp_sent = current_time_monotonic(c->mono_time);
-    }
-
-    if (direct_send_attempt) {
-        return 0;
     }
 
     return ret;
@@ -1460,7 +1319,7 @@ static void connection_kill(Net_Crypto *_Nonnull c, int crypt_connection_id, voi
  * @retval 0 on success.
  */
 static int handle_data_packet_core(Net_Crypto *_Nonnull c, int crypt_connection_id, const uint8_t *_Nonnull packet, uint16_t length,
-                                   bool udp, void *_Nullable userdata)
+                                   void *_Nullable userdata)
 {
     if (length > MAX_CRYPTO_PACKET_SIZE || length <= CRYPTO_DATA_PACKET_MIN_SIZE) {
         return -1;
@@ -1528,15 +1387,7 @@ static int handle_data_packet_core(Net_Crypto *_Nonnull c, int crypt_connection_
     }
 
     if (real_data[0] == PACKET_ID_REQUEST) {
-        uint64_t rtt_time;
-
-        if (udp) {
-            rtt_time = conn->rtt_time;
-        } else {
-            rtt_time = DEFAULT_TCP_PING_CONNECTION;
-        }
-
-        const int requested = handle_request_packet(c->mem, c->mono_time, &conn->send_array, real_data, real_length, &rtt_calc_time, rtt_time);
+        const int requested = handle_request_packet(c->mem, c->mono_time, &conn->send_array, real_data, real_length, &rtt_calc_time, DEFAULT_TCP_PING_CONNECTION);
 
         if (requested == -1) {
             return -1;
@@ -1671,7 +1522,7 @@ static int handle_packet_crypto_hs(const Net_Crypto *_Nonnull c, int crypt_conne
 }
 
 static int handle_packet_crypto_data(Net_Crypto *_Nonnull c, int crypt_connection_id, const uint8_t *_Nonnull packet, uint16_t length,
-                                     bool udp, void *_Nullable userdata)
+                                     void *_Nullable userdata)
 {
     const Crypto_Connection *conn = get_crypto_connection(c, crypt_connection_id);
     if (conn == nullptr) {
@@ -1682,7 +1533,7 @@ static int handle_packet_crypto_data(Net_Crypto *_Nonnull c, int crypt_connectio
         return -1;
     }
 
-    return handle_data_packet_core(c, crypt_connection_id, packet, length, udp, userdata);
+    return handle_data_packet_core(c, crypt_connection_id, packet, length, userdata);
 }
 
 /** @brief Handle a packet that was received for the connection.
@@ -1691,7 +1542,7 @@ static int handle_packet_crypto_data(Net_Crypto *_Nonnull c, int crypt_connectio
  * @retval 0 on success.
  */
 static int handle_packet_connection(Net_Crypto *_Nonnull c, int crypt_connection_id, const uint8_t *_Nonnull packet, uint16_t length,
-                                    bool udp, void *_Nullable userdata)
+                                    void *_Nullable userdata)
 {
     if (length == 0 || length > MAX_CRYPTO_PACKET_SIZE) {
         return -1;
@@ -1705,7 +1556,7 @@ static int handle_packet_connection(Net_Crypto *_Nonnull c, int crypt_connection
             return handle_packet_crypto_hs(c, crypt_connection_id, packet, length, userdata);
 
         case NET_PACKET_CRYPTO_DATA:
-            return handle_packet_crypto_data(c, crypt_connection_id, packet, length, udp, userdata);
+            return handle_packet_crypto_data(c, crypt_connection_id, packet, length, userdata);
 
         default:
             return -1;
@@ -2109,7 +1960,7 @@ static int tcp_data_callback(void *_Nonnull object, int crypt_connection_id, con
         return tcp_handle_cookie_request(c, conn->connection_number_tcp, packet, length);
     }
 
-    const int ret = handle_packet_connection(c, crypt_connection_id, packet, length, false, userdata);
+    const int ret = handle_packet_connection(c, crypt_connection_id, packet, length, userdata);
 
     if (ret != 0) {
         return -1;
@@ -2367,67 +2218,6 @@ int nc_dht_pk_callback(const Net_Crypto *c, int crypt_connection_id, dht_pk_cb *
     conn->dht_pk_callback = function;
     conn->dht_pk_callback_object = object;
     conn->dht_pk_callback_number = number;
-    return 0;
-}
-
-/** @brief Get the crypto connection id from the ip_port.
- *
- * return -1 on failure.
- * return connection id on success.
- */
-static int crypto_id_ip_port(const Net_Crypto *_Nonnull c, const IP_Port *_Nonnull ip_port)
-{
-    return bs_list_find(&c->ip_port_list, (const uint8_t *)ip_port);
-}
-
-#define CRYPTO_MIN_PACKET_SIZE (1 + sizeof(uint16_t) + CRYPTO_MAC_SIZE)
-
-/** @brief Handle raw UDP packets coming directly from the socket.
- *
- * Handles:
- * Cookie response packets.
- * Crypto handshake packets.
- * Crypto data packets.
- *
- */
-static int udp_handle_packet(void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length,
-                             void *_Nullable userdata)
-{
-    Net_Crypto *c = (Net_Crypto *)object;
-    if (length <= CRYPTO_MIN_PACKET_SIZE || length > MAX_CRYPTO_PACKET_SIZE) {
-        return 1;
-    }
-
-    const int crypt_connection_id = crypto_id_ip_port(c, source);
-
-    if (crypt_connection_id == -1) {
-        if (packet[0] != NET_PACKET_CRYPTO_HS) {
-            return 1;
-        }
-
-        if (handle_new_connection_handshake(c, source, packet, length, userdata) != 0) {
-            return 1;
-        }
-
-        return 0;
-    }
-
-    if (handle_packet_connection(c, crypt_connection_id, packet, length, true, userdata) != 0) {
-        return 1;
-    }
-
-    Crypto_Connection *conn = get_crypto_connection(c, crypt_connection_id);
-
-    if (conn == nullptr) {
-        return -1;
-    }
-
-    if (net_family_is_ipv4(source->ip.family)) {
-        conn->direct_lastrecv_timev4 = mono_time_get(c->mono_time);
-    } else {
-        conn->direct_lastrecv_timev6 = mono_time_get(c->mono_time);
-    }
-
     return 0;
 }
 
@@ -2875,13 +2665,6 @@ bool crypto_connection_status(const Net_Crypto *c, int crypt_connection_id, bool
 
     if (direct_connected != nullptr) {
         *direct_connected = false;
-
-        const uint64_t current_time = mono_time_get(c->mono_time);
-
-        if ((UDP_DIRECT_TIMEOUT + conn->direct_lastrecv_timev4) > current_time ||
-                (UDP_DIRECT_TIMEOUT + conn->direct_lastrecv_timev6) > current_time) {
-            *direct_connected = true;
-        }
     }
 
     if (online_tcp_relays != nullptr) {
@@ -2955,11 +2738,6 @@ Net_Crypto *new_net_crypto(const Logger *log, const Memory *mem, const Random *r
 
     temp->current_sleep_time = CRYPTO_SEND_PACKET_INTERVAL;
 
-    networking_registerhandler(dht_get_net(dht), NET_PACKET_COOKIE_REQUEST, &udp_handle_cookie_request, temp);
-    networking_registerhandler(dht_get_net(dht), NET_PACKET_COOKIE_RESPONSE, &udp_handle_packet, temp);
-    networking_registerhandler(dht_get_net(dht), NET_PACKET_CRYPTO_HS, &udp_handle_packet, temp);
-    networking_registerhandler(dht_get_net(dht), NET_PACKET_CRYPTO_DATA, &udp_handle_packet, temp);
-
     bs_list_init(&temp->ip_port_list, mem, sizeof(IP_Port), 8, ipport_cmp_handler);
 
     return temp;
@@ -3021,10 +2799,6 @@ void kill_net_crypto(Net_Crypto *c)
 
     kill_tcp_connections(c->tcp_c);
     bs_list_free(&c->ip_port_list);
-    networking_registerhandler(dht_get_net(c->dht), NET_PACKET_COOKIE_REQUEST, nullptr, nullptr);
-    networking_registerhandler(dht_get_net(c->dht), NET_PACKET_COOKIE_RESPONSE, nullptr, nullptr);
-    networking_registerhandler(dht_get_net(c->dht), NET_PACKET_CRYPTO_HS, nullptr, nullptr);
-    networking_registerhandler(dht_get_net(c->dht), NET_PACKET_CRYPTO_DATA, nullptr, nullptr);
     crypto_memzero(c, sizeof(Net_Crypto));
     mem_delete(mem, c);
 }

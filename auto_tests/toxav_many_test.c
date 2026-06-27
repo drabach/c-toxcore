@@ -171,6 +171,7 @@ static void test_av_three_calls(void)
         Tox_Options *opts = tox_options_new(nullptr);
         ck_assert(opts != nullptr);
         tox_options_set_experimental_thread_safety(opts, true);
+        tox_options_set_tcp_port(opts, 33455);
         Tox_Err_New error;
 
         bootstrap = tox_new_log(opts, &error, &index[0]);
@@ -210,12 +211,18 @@ static void test_av_three_calls(void)
            (unsigned)(sizeof(bobs) / sizeof(bobs[0])));
     uint8_t dht_key[TOX_PUBLIC_KEY_SIZE];
     tox_self_get_dht_id(bootstrap, dht_key);
-    const uint16_t dht_port = tox_self_get_udp_port(bootstrap, nullptr);
+    const uint16_t tcp_port = tox_self_get_tcp_port(bootstrap, nullptr);
 
-    tox_bootstrap(alice, "localhost", dht_port, dht_key, nullptr);
-    tox_bootstrap(bobs[0], "localhost", dht_port, dht_key, nullptr);
-    tox_bootstrap(bobs[1], "localhost", dht_port, dht_key, nullptr);
-    tox_bootstrap(bobs[2], "localhost", dht_port, dht_key, nullptr);
+    ck_assert_msg(tcp_port != 0, "TCP relay port should be non-zero");
+
+    tox_bootstrap(alice, "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(alice, "localhost", tcp_port, dht_key, nullptr);
+    tox_bootstrap(bobs[0], "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(bobs[0], "localhost", tcp_port, dht_key, nullptr);
+    tox_bootstrap(bobs[1], "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(bobs[1], "localhost", tcp_port, dht_key, nullptr);
+    tox_bootstrap(bobs[2], "localhost", tcp_port, dht_key, nullptr);
+    tox_add_tcp_relay(bobs[2], "localhost", tcp_port, dht_key, nullptr);
 
     ck_assert(tox_friend_add(bobs[0], address, (const uint8_t *)"gentoo", 7, nullptr) != (uint32_t) -1);
     ck_assert(tox_friend_add(bobs[1], address, (const uint8_t *)"gentoo", 7, nullptr) != (uint32_t) -1);
@@ -239,12 +246,12 @@ static void test_av_three_calls(void)
             off = 0;
         }
 
-        if (tox_friend_get_connection_status(alice, 0, nullptr) == TOX_CONNECTION_UDP &&
-                tox_friend_get_connection_status(alice, 1, nullptr) == TOX_CONNECTION_UDP &&
-                tox_friend_get_connection_status(alice, 2, nullptr) == TOX_CONNECTION_UDP &&
-                tox_friend_get_connection_status(bobs[0], 0, nullptr) == TOX_CONNECTION_UDP &&
-                tox_friend_get_connection_status(bobs[1], 0, nullptr) == TOX_CONNECTION_UDP &&
-                tox_friend_get_connection_status(bobs[2], 0, nullptr) == TOX_CONNECTION_UDP) {
+        if (tox_friend_get_connection_status(alice, 0, nullptr) == TOX_CONNECTION_TCP &&
+                tox_friend_get_connection_status(alice, 1, nullptr) == TOX_CONNECTION_TCP &&
+                tox_friend_get_connection_status(alice, 2, nullptr) == TOX_CONNECTION_TCP &&
+                tox_friend_get_connection_status(bobs[0], 0, nullptr) == TOX_CONNECTION_TCP &&
+                tox_friend_get_connection_status(bobs[1], 0, nullptr) == TOX_CONNECTION_TCP &&
+                tox_friend_get_connection_status(bobs[2], 0, nullptr) == TOX_CONNECTION_TCP) {
             break;
         }
 

@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>c-toxcore DHT Implementation</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 20px; color: #222; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-top: 32px; }
+  h3 { margin-top: 24px; }
+  h4 { margin-top: 16px; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; border: 1px solid #ddd; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.9em; }
+  th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #333; color: #fff; font-weight: 600; }
+  tr:nth-child(even) { background: #f9f9f9; }
+  a { color: #1a73e8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .note { background: #fffde7; border-left: 4px solid #f9a825; padding: 12px; margin: 16px 0; }
+  .warn { background: #fbe9e7; border-left: 4px solid #d32f2f; padding: 12px; margin: 16px 0; }
+  .toc { background: #f8f9fa; border: 1px solid #ddd; padding: 16px 24px; border-radius: 4px; margin: 20px 0; }
+  .toc ul { margin: 8px 0 0 0; }
+  .toc li { margin: 2px 0; }
+  .field-table td:first-child { font-family: monospace; font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>c-toxcore DHT Implementation</h1>
+
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+  <li><a href="#overview">Overview</a></li>
+  <li><a href="#architecture">Architecture</a>
+    <ul>
+      <li><a href="#key-data-structures">Key Data Structures</a></li>
+    </ul>
+  </li>
+  <li><a href="#network-protocol">Network Protocol</a>
+    <ul>
+      <li><a href="#packet-types">Packet Types</a></li>
+      <li><a href="#crypto-packet-ids">Crypto Packet IDs</a></li>
+      <li><a href="#node-format-wire">Node Format (Wire)</a></li>
+      <li><a href="#ping-packet">Ping Packet</a></li>
+      <li><a href="#nodes-request-packet">Nodes Request Packet</a></li>
+      <li><a href="#nodes-response-packet">Nodes Response Packet</a></li>
+    </ul>
+  </li>
+  <li><a href="#core-algorithms">Core Algorithms</a>
+    <ul>
+      <li><a href="#kademlia-routing">Kademlia-like Routing</a></li>
+      <li><a href="#bootstrap">Bootstrap Process</a></li>
+      <li><a href="#peer-discovery">Peer Discovery</a></li>
+      <li><a href="#get-close-nodes">get_close_nodes()</a></li>
+    </ul>
+  </li>
+  <li><a href="#ping-system">Ping System</a></li>
+  <li><a href="#timing-constants">Timing Constants</a></li>
+  <li><a href="#nat-hole-punching">NAT Hole Punching</a></li>
+  <li><a href="#close-friend-relationship">Close List and Friend List</a></li>
+  <li><a href="#connectivity-detection">Connectivity Detection</a></li>
+  <li><a href="#onion-routing">Onion Routing Integration</a></li>
+  <li><a href="#tcp-relays">TCP Relay Integration</a></li>
+  <li><a href="#cryptography">Cryptography</a></li>
+  <li><a href="#saving-loading">Saving and Loading</a></li>
+  <li><a href="#constants">Constants Summary</a></li>
+  <li><a href="#walkthrough">Concrete Walkthrough: Tor Scenario</a></li>
+  <li><a href="#tor-plan">Implementation Plan: Tor-Only DHT</a></li>
+  <li><a href="#files">Relevant Files</a></li>
+</ul>
+</div>
+
+<h2 id="overview">Overview</h2>
+<p>
+  The DHT (Distributed Hash Table) in c-toxcore is a Kademlia-like overlay network
+  that enables peer discovery in the Tox messaging protocol. It provides a way for
+  nodes to find each other's IP addresses using only their long-term public keys,
+  without requiring a central server.
+</p>
+<p>
+  The implementation follows the principles of the BitTorrent DHT (BEP 0005) but with
+  a simplified, encrypted packet format and NAT traversal capabilities.
+</p>
+
+<h2 id="architecture">Architecture</h2>
+
+<h3 id="key-data-structures">Key Data Structures</h3>
+
+<h4><code>DHT</code> (top-level state)</h4>
+<p>The central object holding all DHT state:</p>
+<table class="field-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td>self_public_key</td><td><code>uint8_t[32]</code></td><td>Our Curve25519 DHT public key</td></tr>
+  <tr><td>self_secret_key</td><td><code>uint8_t[32]</code></td><td>Our Curve25519 DHT secret key</td></tr>
+  <tr><td>close_clientlist</td><td><code>Client_data[1024]</code></td><td>128 buckets &times; 8 nodes closest to our key</td></tr>
+  <tr><td>friends_list</td><td><code>DHT_Friend[]</code></td><td>Dynamic array of friends we want to find</td></tr>
+  <tr><td>num_friends</td><td><code>uint16_t</code></td><td>Number of DHT friends</td></tr>
+  <tr><td>hole_punching_enabled</td><td><code>bool</code></td><td>NAT hole punching toggle</td></tr>
+  <tr><td>dht_ping_array</td><td><code>Ping_Array*</code></td><td>Stores ping IDs for nodes requests</td></tr>
+  <tr><td>shared_keys_recv/sent</td><td><code>Shared_Key_Cache*</code></td><td>ECDH shared key caches</td></tr>
+</table>
+
+<h4><code>DHT_Friend</code></h4>
+<p>Represents a friend in the DHT:</p>
+<table class="field-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td>public_key</td><td><code>uint8_t[32]</code></td><td>Friend's DHT public key</td></tr>
+  <tr><td>client_list</td><td><code>Client_data[8]</code></td><td>8 nodes closest to this friend</td></tr>
+  <tr><td>last_nodes_request</td><td><code>uint64_t</code></td><td>Last nodes request timestamp</td></tr>
+  <tr><td>bootstrap_times</td><td><code>uint32_t</code></td><td>Bootstrap attempt count</td></tr>
+  <tr><td>nat</td><td><code>NAT</code></td><td>Hole punching state</td></tr>
+  <tr><td>to_bootstrap</td><td><code>Node_format[4]</code></td><td>Pending nodes to bootstrap for this friend</td></tr>
+</table>
+
+<h4><code>Client_data</code></h4>
+<p>A known DHT node:</p>
+<table class="field-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td>public_key</td><td><code>uint8_t[32]</code></td><td>Node's DHT public key</td></tr>
+  <tr><td>assoc4</td><td><code>IPPTsPng</code></td><td>IPv4 association (IP, port, timestamps)</td></tr>
+  <tr><td>assoc6</td><td><code>IPPTsPng</code></td><td>IPv6 association</td></tr>
+  <tr><td>announce_node</td><td><code>bool</code></td><td>Supports announce protocol (if <code>CHECK_ANNOUNCE_NODE</code>)</td></tr>
+</table>
+
+<h4><code>IPPTsPng</code></h4>
+<p>Tracks a single association with a node:</p>
+<table class="field-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td>ip_port</td><td><code>IP_Port</code></td><td>The node's address</td></tr>
+  <tr><td>timestamp</td><td><code>uint64_t</code></td><td>Last successful ping</td></tr>
+  <tr><td>last_pinged</td><td><code>uint64_t</code></td><td>Last time we pinged them</td></tr>
+  <tr><td>ret_ip_port</td><td><code>IP_Port</code></td><td>IP the node says we have</td></tr>
+  <tr><td>ret_timestamp</td><td><code>uint64_t</code></td><td>When <code>ret_ip_port</code> was updated</td></tr>
+  <tr><td>ret_ip_self</td><td><code>bool</code></td><td>Whether <code>ret_ip_port</code> is our own IP</td></tr>
+</table>
+
+<h4><code>Node_format</code></h4>
+<p>Compact format for transferring node info in packets:</p>
+<table class="field-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td>public_key</td><td><code>uint8_t[32]</code></td><td>DHT public key</td></tr>
+  <tr><td>ip_port</td><td><code>IP_Port</code></td><td>IP address and port</td></tr>
+</table>
+
+<h4><code>NAT</code></h4>
+<p>Hole punching state per friend:</p>
+<table class="field-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td>hole_punching</td><td><code>bool</code></td><td>Actively hole punching?</td></tr>
+  <tr><td>punching_index</td><td><code>uint32_t</code></td><td>Port iteration index</td></tr>
+  <tr><td>tries</td><td><code>uint32_t</code></td><td>Attempt counter</td></tr>
+  <tr><td>punching_index2</td><td><code>uint32_t</code></td><td>Second port iteration index</td></tr>
+  <tr><td>punching_timestamp</td><td><code>uint64_t</code></td><td>Last punch time</td></tr>
+  <tr><td>recv_nat_ping_timestamp</td><td><code>uint64_t</code></td><td>Last NAT ping received</td></tr>
+  <tr><td>nat_ping_id</td><td><code>uint64_t</code></td><td>Current NAT ping ID</td></tr>
+  <tr><td>nat_ping_timestamp</td><td><code>uint64_t</code></td><td>Last NAT ping sent</td></tr>
+</table>
+
+<h2 id="network-protocol">Network Protocol</h2>
+
+<h3 id="packet-types">Packet Types</h3>
+<table>
+  <tr><th>Type</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>NET_PACKET_PING_REQUEST</code></td><td><code>0x00</code></td><td>Ping request</td></tr>
+  <tr><td><code>NET_PACKET_PING_RESPONSE</code></td><td><code>0x01</code></td><td>Ping response</td></tr>
+  <tr><td><code>NET_PACKET_NODES_REQUEST</code></td><td><code>0x02</code></td><td>Request close nodes</td></tr>
+  <tr><td><code>NET_PACKET_NODES_RESPONSE</code></td><td><code>0x04</code></td><td>Send close nodes</td></tr>
+  <tr><td><code>NET_PACKET_CRYPTO</code></td><td><code>0x20</code></td><td>Generic encrypted packet</td></tr>
+</table>
+
+<h3 id="crypto-packet-ids">Crypto Packet IDs (inside <code>NET_PACKET_CRYPTO</code>)</h3>
+<table>
+  <tr><th>ID</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>CRYPTO_PACKET_FRIEND_REQ</code></td><td><code>32</code></td><td>Friend request</td></tr>
+  <tr><td><code>CRYPTO_PACKET_DHTPK</code></td><td><code>156</code></td><td>DHT public key exchange</td></tr>
+  <tr><td><code>CRYPTO_PACKET_NAT_PING</code></td><td><code>254</code></td><td>NAT hole punching ping</td></tr>
+</table>
+
+<h3 id="node-format-wire">Node Format (wire)</h3>
+<pre><code>[uint8_t family]
+  - 2   = IPv4
+  - 10  = IPv6
+  - 130 = TCP over IPv4
+  - 138 = TCP over IPv6
+[ip bytes: 4 (IPv4) or 16 (IPv6)]
+[uint16_t port (network byte order)]
+[uint8_t[32] public_key]</code></pre>
+
+<h3 id="ping-packet">Ping Packet</h3>
+<pre><code>Request:  0x00 | sender_pubkey[32] | nonce[24] | encrypt(type=0 | ping_id[8])
+Response: 0x01 | sender_pubkey[32] | nonce[24] | encrypt(type=1 | ping_id[8])</code></pre>
+<p>Total size: 82 bytes (<code>1 + 32 + 24 + 1 + 8 + 16 = 82</code>)</p>
+<p>Ping IDs are stored in a <code>Ping_Array</code> with a 5-second timeout (<code>PING_TIMEOUT</code>).</p>
+
+<h3 id="nodes-request-packet">Nodes Request Packet</h3>
+<pre><code>0x02 | sender_pubkey[32] | nonce[24] | encrypt(target_node_id[32] | sendback_data[8])</code></pre>
+
+<h3 id="nodes-response-packet">Nodes Response Packet</h3>
+<pre><code>0x04 | sender_pubkey[32] | nonce[24] | encrypt(num_nodes | nodes[] | sendback_data[8])</code></pre>
+<p>The response contains up to 4 nodes (<code>MAX_SENT_NODES</code>) closest to the requested target.</p>
+
+<h2 id="core-algorithms">Core Algorithms</h2>
+
+<h3 id="kademlia-routing">Kademlia-like Routing</h3>
+<p>
+  The DHT organizes nodes by XOR distance between their 256-bit public keys.
+  The distance metric is:
+</p>
+<pre><code>distance(a, b) = a XOR b  (treated as a 256-bit integer)</code></pre>
+
+<h4>Close List</h4>
+<p>
+  The <code>close_clientlist</code> has 1024 slots organized as 128 buckets &times; 8 nodes.
+  Bucket <code>i</code> (0&ndash;127) contains nodes where the first differing bit from our key
+  falls in bit range <code>[i*8, i*8+7]</code>.
+</p>
+<p>A node is added to the close list if:</p>
+<ul>
+  <li>Its XOR distance to our key lands it in a non-full bucket, or</li>
+  <li>It is closer than the worst node in the appropriate bucket</li>
+</ul>
+<p>
+  The <em>first</em> differing bit determines the bucket. The <em>total</em> XOR distance
+  determines ordering within a bucket.
+</p>
+
+<h4>XOR Comparison Functions</h4>
+<ul>
+  <li><code>bit_by_bit_cmp(pk1, pk2)</code> &mdash; returns the index of the first differing bit (MSB, 0-indexed).</li>
+  <li><code>id_closest(pk, pk1, pk2)</code> &mdash; returns <code>0</code> equal distance, <code>1</code> if pk1 closer, <code>2</code> if pk2 closer.</li>
+</ul>
+
+<h3 id="bootstrap">Bootstrap Process</h3>
+<ol>
+  <li>
+    <strong>Initial bootstrap:</strong> <code>dht_bootstrap()</code> sends a
+    <code>NET_PACKET_NODES_REQUEST</code> to a known bootstrap node.
+  </li>
+  <li>
+    <strong>Post-load bootstrap:</strong> <code>dht_connect_after_load()</code>
+    bootstraps from up to 8 previously saved nodes in round-robin fashion,
+    stopping once <code>dht_non_lan_connected()</code> returns true.
+  </li>
+  <li>
+    <strong>Aggressive bootstrap:</strong> For each friend, up to
+    <code>MAX_BOOTSTRAP_TIMES</code> (5) extra nodes requests are sent
+    aggressively before settling into the routine interval.
+  </li>
+</ol>
+
+<h3 id="peer-discovery">Peer Discovery (Iterative Lookup)</h3>
+<p>For each friend in <code>friends_list[]</code>, the DHT periodically sends nodes requests:</p>
+<ul>
+  <li>Every 20 seconds (<code>NODES_REQUEST_INTERVAL</code>): to a random good node from the friend's client list.</li>
+  <li>Every 60 seconds (<code>PING_INTERVAL</code>): to every node in both the close list and friend client lists (combined ping + nodes request).</li>
+</ul>
+<p>When a nodes response arrives:</p>
+<ol>
+  <li>The ping ID is verified.</li>
+  <li>The responder is added via <code>addto_lists()</code>.</li>
+  <li>Each returned node is queued for pinging via the <code>to_ping</code> buffer.</li>
+  <li>Return IP information is updated for NAT traversal.</li>
+</ol>
+
+<h3 id="get-close-nodes"><code>get_close_nodes()</code></h3>
+<p>
+  Searches both <code>close_clientlist</code> and every friend's <code>client_list</code>
+  to find up to 4 nodes closest to a target public key. Features:
+</p>
+<ul>
+  <li>IPv4/IPv6 filtering</li>
+  <li>LAN IP filtering when requester is not on LAN</li>
+  <li>Optional announce-node-only filtering (<code>CHECK_ANNOUNCE_NODE</code>)</li>
+</ul>
+
+<h2 id="ping-system">Ping System</h2>
+
+<h3>Anti-Amplification Design</h3>
+<p>
+  The ping system in <code>ping.c</code> prevents amplification attacks through a
+  <strong>to_ping buffer</strong>:
+</p>
+<ol>
+  <li>When a node sends us a valid packet, <code>ping_add()</code> adds it to a buffer (max 32 entries).</li>
+  <li>Every 2 seconds (<code>TIME_TO_PING</code>), <code>ping_iterate()</code> sends actual ping requests to all buffered nodes.</li>
+  <li>This ensures we never initiate contact with a node that didn't contact us first.</li>
+</ol>
+
+<h3>Ping Flow</h3>
+<ol>
+  <li>Generate a random 64-bit ping ID, store <code>{public_key, IP_Port}</code> in <code>ping_array</code> (5s timeout).</li>
+  <li>Encrypt with ECDH-derived shared key, send as <code>NET_PACKET_PING_REQUEST</code>.</li>
+  <li>Receiver decrypts, sends back <code>NET_PACKET_PING_RESPONSE</code> with same ping ID, and calls <code>ping_add()</code>.</li>
+  <li>We verify the ping ID, confirm source IP/port matches, then call <code>addto_lists()</code>.</li>
+</ol>
+
+<h3>Combined Pings + Nodes Requests</h3>
+<p>
+  In <code>do_ping_and_sendnode_requests()</code>, nodes requests double as pings:
+  every 60 seconds, every node gets a nodes request serving as both a liveness
+  check and a lookup for closer nodes.
+</p>
+
+<h2 id="timing-constants">Timing Constants</h2>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>PING_TIMEOUT</code></td><td>5s</td><td>Ping ID validity</td></tr>
+  <tr><td><code>PING_INTERVAL</code></td><td>60s</td><td>Routine ping interval</td></tr>
+  <tr><td><code>PINGS_MISSED_NODE_GOES_BAD</code></td><td>1</td><td>Missed pings before "bad"</td></tr>
+  <tr><td><code>PING_ROUNDTRIP</code></td><td>2</td><td>Estimated round-trips</td></tr>
+  <tr><td><code>BAD_NODE_TIMEOUT</code></td><td>122s</td><td>= 60 + 1&times;(60+2)</td></tr>
+  <tr><td><code>KILL_NODE_TIMEOUT</code></td><td>182s</td><td>= 122 + 60, full discard</td></tr>
+  <tr><td><code>NODES_REQUEST_INTERVAL</code></td><td>20s</td><td>Random nodes request</td></tr>
+  <tr><td><code>DHT_PING_ARRAY_SIZE</code></td><td>512</td><td>Ping array capacity</td></tr>
+  <tr><td><code>MAX_BOOTSTRAP_TIMES</code></td><td>5</td><td>Aggressive bootstrap limit</td></tr>
+  <tr><td><code>PUNCH_INTERVAL</code></td><td>3s</td><td>Hole punching interval</td></tr>
+  <tr><td><code>PUNCH_RESET_TIME</code></td><td>40s</td><td>Punching reset timeout</td></tr>
+  <tr><td><code>MAX_PUNCHING_PORTS</code></td><td>48</td><td>Ports per punching cycle</td></tr>
+  <tr><td><code>MAX_NORMAL_PUNCHING_TRIES</code></td><td>5</td><td>Normal tries before brute-force</td></tr>
+  <tr><td><code>TIME_TO_PING</code></td><td>2s</td><td>to_ping buffer flush interval</td></tr>
+  <tr><td><code>KEYS_TIMEOUT</code></td><td>600s</td><td>Shared key cache timeout</td></tr>
+</table>
+
+<h2 id="nat-hole-punching">NAT Hole Punching</h2>
+
+<h3>Prerequisites</h3>
+<ul>
+  <li><code>hole_punching_enabled</code> must be <code>true</code>.</li>
+  <li>At least <code>MAX_FRIEND_CLIENTS / 2</code> (4) nodes report the same friend IP.</li>
+  <li>The friend must be "online" (nodes returning their IPs).</li>
+</ul>
+
+<h3>Protocol</h3>
+<p>Uses <code>CRYPTO_PACKET_NAT_PING</code> (ID 254):</p>
+<ul>
+  <li><strong>Request</strong> (type 0): broadcast via <code>route_to_friend()</code> to all nodes claiming to know the friend.</li>
+  <li><strong>Response</strong> (type 1): sent via <code>routeone_to_friend()</code> to a single node.</li>
+</ul>
+
+<h3>Punching Algorithm (<code>punch_holes()</code>)</h3>
+<p><strong>Phase 1</strong> (first 5 tries):</p>
+<ul>
+  <li>If all reported ports are the same: ping that port directly.</li>
+  <li>If ports differ: iterate 48 attempts alternating around known ports.</li>
+</ul>
+<p><strong>Phase 2</strong> (after 5+ tries): brute-force scan starting from port 1024, 48 pings per cycle.</p>
+<p>If no success after 40s (<code>PUNCH_RESET_TIME</code>), all counters reset.</p>
+
+<h3><code>do_nat()</code> Loop</h3>
+<p>Runs every <code>do_dht()</code> cycle:</p>
+<ul>
+  <li>Every 3s (<code>PUNCH_INTERVAL</code>): send NAT ping request for each friend with enough returned IPs.</li>
+  <li>If hole punching active AND we received a ping within 6s: find common IP via <code>nat_commonip()</code>, call <code>punch_holes()</code>.</li>
+</ul>
+
+<h2 id="close-friend-relationship">Close List and Friend List Relationship</h2>
+
+<h3>Close List (<code>close_clientlist[1024]</code>)</h3>
+<ul>
+  <li>Nodes closest to <strong>our own</strong> DHT public key.</li>
+  <li>128 buckets, 8 nodes per bucket. Bucket determined by first differing bit.</li>
+  <li>Used for routing, nodes responses, connectivity detection.</li>
+</ul>
+
+<h3>Friend List (<code>friends_list[]</code>)</h3>
+<ul>
+  <li>One entry per friend. Each has <code>client_list[8]</code> of nodes closest to <strong>the friend's</strong> key.</li>
+  <li>Nodes report the friend's current IP via <code>ret_ip_port</code>.</li>
+  <li>A friend is "found" when its public key appears in its own <code>client_list</code> with a valid association.</li>
+</ul>
+
+<h3><code>addto_lists()</code></h3>
+<p>
+  Called on any valid packet from a node. Adds/updates in:
+</p>
+<ol>
+  <li>The <code>close_clientlist</code> (via <code>add_to_close()</code>).</li>
+  <li>Every friend's <code>client_list</code> where the node is in range (via <code>replace_all()</code>).</li>
+</ol>
+
+<h3>Node Replacement (<code>replace_all()</code>)</h3>
+<p>Within each friend's <code>client_list[8]</code>, nodes sorted by:</p>
+<ol>
+  <li>Non-timed-out nodes first (by XOR distance).</li>
+  <li>Timed-out nodes last (by XOR distance).</li>
+</ol>
+<p>A new node replaces an existing one if: there is a bad slot, or the new node is XOR-closer to the friend than the furthest good node.</p>
+
+<h3>Fake Friends</h3>
+<p>
+  <code>DHT_FAKE_FRIEND_NUMBER</code> (2) random keypairs are added on DHT creation
+  for onion path routing, preventing real friend info from leaking.
+</p>
+
+<h2 id="connectivity-detection">Connectivity Detection</h2>
+<ul>
+  <li><code>dht_isconnected()</code>: true if any close list entry has a non-timed-out association.</li>
+  <li><code>dht_non_lan_connected()</code>: true if any close list entry has a non-timed-out, non-LAN association.</li>
+</ul>
+
+<h2 id="onion-routing">Onion Routing Integration</h2>
+
+<h3>Onion Path Construction</h3>
+<p>
+  3 DHT nodes are selected per 3-hop path:
+</p>
+<ul>
+  <li><code>randfriends_nodes()</code> &mdash; from fake friends' client lists (avoids leaking real friends).</li>
+  <li><code>closelist_nodes()</code> &mdash; from the close client list.</li>
+  <li><code>create_onion_path()</code> assembles the path with ephemeral keypairs per hop.</li>
+</ul>
+
+<h3>Announce Protocol</h3>
+<p>
+  Clients announce to 12 DHT nodes via 3-hop onion paths. The announce server
+  stores: real public key, 3-layer encrypted return path, data encryption key.
+  Entries expire after 300s (<code>ONION_ANNOUNCE_TIMEOUT</code>).
+</p>
+
+<h3>Data Delivery</h3>
+<p>
+  To reach a friend whose IP is unknown: send an onion data request to a server
+  the friend announced to; the server wraps the data along the stored return path;
+  the friend receives it through 3 layers of decryption.
+</p>
+
+<h3>DHT Public Key Exchange</h3>
+<p>
+  Friends exchange temporary DHT public keys via onion data packets
+  (<code>ONION_DATA_DHTPK = 156</code>). Sent every 30s via onion and every 20s
+  via direct DHT.
+</p>
+
+<h2 id="tcp-relays">TCP Relay Integration</h2>
+<p>
+  TCP relays have DHT public keys and use special address families
+  (<code>TOX_TCP_INET = 130</code>, <code>TOX_TCP_INET6 = 138</code>).
+</p>
+<ul>
+  <li>TCP relay info is exchanged between friends via onion data packets.</li>
+  <li>When UDP is unavailable, onion paths can use TCP relays.</li>
+  <li>3 TCP connections are reserved for onion use.</li>
+  <li><code>tcp_send_onion_request()</code> sends onion packets via TCP relays.</li>
+</ul>
+
+<h2 id="cryptography">Cryptography</h2>
+<p>All primitives use NaCl/libsodium:</p>
+<table>
+  <tr><th>Primitive</th><th>Usage</th></tr>
+  <tr><td>Curve25519</td><td>DHT key exchange</td></tr>
+  <tr><td>Salsa20</td><td>Stream cipher</td></tr>
+  <tr><td>Poly1305</td><td>MAC (authentication)</td></tr>
+  <tr><td>ECDH</td><td>Shared key derivation per (pubkey, secretkey) pair</td></tr>
+</table>
+
+<h3>Packet Encryption</h3>
+<ul>
+  <li>DHT packets: ECDH key exchange &rarr; shared key &rarr; symmetric encryption.</li>
+  <li><code>Shared_Key_Cache</code> caches ECDH results (600s timeout).</li>
+  <li>Onion packets: ephemeral keypairs per hop.</li>
+  <li>Ping IDs encrypted with ECDH-derived shared keys.</li>
+</ul>
+
+<h2 id="saving-loading">Saving and Loading</h2>
+<ul>
+  <li><code>dht_save()</code> &mdash; serializes close client list and friend data.</li>
+  <li><code>dht_load()</code> &mdash; restores state and queues saved nodes for bootstrap.</li>
+  <li><code>dht_size()</code> &mdash; returns serialized size.</li>
+</ul>
+
+<h2 id="constants">Constants Summary</h2>
+
+<h3>List Sizes</h3>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>MAX_FRIEND_CLIENTS</code></td><td>8</td><td>Nodes per friend</td></tr>
+  <tr><td><code>LCLIENT_NODES</code></td><td>8</td><td>Nodes per close bucket</td></tr>
+  <tr><td><code>LCLIENT_LENGTH</code></td><td>128</td><td>Close list buckets</td></tr>
+  <tr><td><code>LCLIENT_LIST</code></td><td>1024</td><td>Total close entries</td></tr>
+  <tr><td><code>MAX_SENT_NODES</code></td><td>4</td><td>Nodes in a response</td></tr>
+  <tr><td><code>MAX_CLOSE_TO_BOOTSTRAP_NODES</code></td><td>8</td><td>Bootstrap nodes from save</td></tr>
+  <tr><td><code>DHT_FAKE_FRIEND_NUMBER</code></td><td>2</td><td>Fake friends for onion</td></tr>
+  <tr><td><code>MAX_CRYPTO_REQUEST_SIZE</code></td><td>1024</td><td>Max request packet size</td></tr>
+  <tr><td><code>DHT_PING_ARRAY_SIZE</code></td><td>512</td><td>DHT ping array capacity</td></tr>
+  <tr><td><code>DHT_FRIEND_MAX_LOCKS</code></td><td>32</td><td>Max callbacks per friend</td></tr>
+  <tr><td><code>PING_NUM_MAX</code></td><td>512</td><td>Ping array capacity</td></tr>
+  <tr><td><code>MAX_TO_PING</code></td><td>32</td><td>to_ping buffer size</td></tr>
+</table>
+
+<h3>Timeouts</h3>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>PING_TIMEOUT</code></td><td>5s</td><td>Ping ID validity</td></tr>
+  <tr><td><code>BAD_NODE_TIMEOUT</code></td><td>122s</td><td>Node considered bad</td></tr>
+  <tr><td><code>KILL_NODE_TIMEOUT</code></td><td>182s</td><td>Node fully discarded</td></tr>
+  <tr><td><code>PUNCH_RESET_TIME</code></td><td>40s</td><td>Punching reset</td></tr>
+  <tr><td><code>KEYS_TIMEOUT</code></td><td>600s</td><td>Shared key cache expiry</td></tr>
+  <tr><td><code>ONION_ANNOUNCE_TIMEOUT</code></td><td>300s</td><td>Onion entry expiry</td></tr>
+  <tr><td><code>ONION_PATH_MAX_LIFETIME</code></td><td>1200s</td><td>Max onion path lifetime</td></tr>
+  <tr><td><code>ONION_OFFLINE_TIMEOUT</code></td><td>51s</td><td>Onion offline timeout</td></tr>
+</table>
+
+<h3>Intervals</h3>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>PING_INTERVAL</code></td><td>60s</td><td>Routine ping</td></tr>
+  <tr><td><code>NODES_REQUEST_INTERVAL</code></td><td>20s</td><td>Nodes lookup</td></tr>
+  <tr><td><code>PUNCH_INTERVAL</code></td><td>3s</td><td>Hole punching</td></tr>
+  <tr><td><code>TIME_TO_PING</code></td><td>2s</td><td>to_ping flush</td></tr>
+  <tr><td><code>ONION_NODE_PING_INTERVAL</code></td><td>15s</td><td>Onion node ping</td></tr>
+  <tr><td><code>ONION_DHTPK_SEND_INTERVAL</code></td><td>30s</td><td>DHT PK via onion</td></tr>
+  <tr><td><code>DHT_DHTPK_SEND_INTERVAL</code></td><td>20s</td><td>DHT PK via DHT</td></tr>
+  <tr><td><code>LAN_DISCOVERY_INTERVAL</code></td><td>10s</td><td>LAN discovery broadcast</td></tr>
+  <tr><td><code>MAX_BOOTSTRAP_TIMES</code></td><td>5</td><td>Aggressive bootstrap tries</td></tr>
+</table>
+
+<h3>Packet Structure Sizes</h3>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>PACKED_NODE_SIZE_IP4</code></td><td>39</td><td>IPv4 node wire size</td></tr>
+  <tr><td><code>PACKED_NODE_SIZE_IP6</code></td><td>51</td><td>IPv6 node wire size</td></tr>
+  <tr><td><code>DHT_PING_SIZE</code></td><td>82</td><td>Ping packet wire size</td></tr>
+</table>
+
+<h2 id="walkthrough">Concrete Walkthrough: Two Clients Behind Tor Finding Each Other</h2>
+
+<p>This section traces a real scenario end-to-end: two bootstrap relays R1 and R2 that are each reachable via both a clearnet IP and a Tor onion address; two clients A and B, each behind Tor, each contacting a different relay; both clients wanting to find each other.</p>
+
+<h3>Setup</h3>
+<ul>
+  <li><strong>R1, R2</strong> &mdash; bootstrap relays. Each runs a Tox node with a DHT public key and a TCP relay server. Each has a clearnet IP <em>and</em> a Tor onion address (<code>.onion</code>).</li>
+  <li><strong>A, B</strong> &mdash; clients. Each configured with <code>TOX_PROXY_TYPE_SOCKS5</code> pointing to <code>127.0.0.1:9050</code>.</li>
+</ul>
+
+<h3>Layer 1: no UDP</h3>
+<p>Because a SOCKS5 proxy is configured, c-toxcore <strong>disables UDP entirely</strong> (<code>tox_options.h:130-131</code>). All communication goes over TCP relay connections through Tor.</p>
+<pre><code>A → SOCKS5 → Tor → R1.onion:33445   (TCP relay connection)
+B → SOCKS5 → Tor → R2.onion:33445   (TCP relay connection)</code></pre>
+
+<h3>Step 1: Bootstrap</h3>
+<p>A calls <code>dht_bootstrap_from_address("R1.onion", 33445, R1_pubkey)</code>.</p>
+<p>This resolves the hostname, opens a TCP connection through Tor's SOCKS5 proxy to <code>R1.onion:33445</code>, and performs the TCP relay handshake:</p>
+<ol>
+  <li><strong>Cookie request/response</strong> (<code>NET_PACKET_COOKIE_REQUEST</code> / <code>NET_PACKET_COOKIE_RESPONSE</code>) &mdash; obtains a temporary cookie for the crypto handshake.</li>
+  <li><strong>Crypto handshake</strong> (<code>NET_PACKET_CRYPTO_HS</code>) &mdash; establishes an encrypted session with R1's TCP relay server.</li>
+  <li><strong>TCP relay registration</strong> &mdash; A is now a connected TCP relay client. R1 knows A's Tor IP and can route packets to A.</li>
+</ol>
+<p>Same flow for B → R2.</p>
+
+<h3>Step 2: Populating the DHT routing table</h3>
+
+<p>A sends <code>NET_PACKET_NODES_REQUEST</code> to R1. Under Tor, this packet is serialized and sent over the TCP relay connection using <code>tcp_send_onion_request()</code>.</p>
+
+<p>R1's <code>handle_nodes_request()</code> (DHT.c:1363) decrypts the request, extracts the <strong>target public key</strong> (A's own key in this case &mdash; asking "who is close to me?"), and calls <code>send_nodes_response()</code>.</p>
+
+<h4>What <code>send_nodes_response()</code> does (DHT.c:1313)</h4>
+<pre><code>// 1. Get up to 4 nodes closest to the requested key
+Node_format nodes_list[MAX_SENT_NODES];  // MAX_SENT_NODES = 4
+uint32_t num_nodes = get_close_nodes(dht, client_id, nodes_list,
+    net_family_unspec(), ip_is_lan(&amp;source-&gt;ip), false);
+
+// 2. Pack them into the response
+int nodes_length = pack_nodes(..., nodes_list, num_nodes);
+
+// 3. Send: [0x04][sender_pubkey[32]][nonce[24]][encrypted payload]
+// Payload: [num_nodes(1 byte)][packed nodes][sendback_data(8 bytes)]
+sendpacket(dht-&gt;net, source, data, len);</code></pre>
+
+<h4><code>get_close_nodes()</code> scans TWO data structures (DHT.c:729)</h4>
+<p><strong>First</strong>: the <code>close_clientlist[1024]</code> (R1's 128 buckets &times; 8 nodes closest to R1's own key).</p>
+<p><strong>Second</strong>: every friend's <code>client_list[8]</code> (R1's friends lists).</p>
+<p>For each entry, <code>get_close_nodes_inner()</code> (DHT.c:635) checks:</p>
+<pre><code>1. Is the node's association non-timed-out? (timestamp + 122s &gt; now)
+2. Is the address family right? (IPv4/IPv6/unspec)
+3. Is LAN IP allowed? (depends if requester is on LAN)
+4. If want_announce: does node support announce protocol?</code></pre>
+<p>If all checks pass, the node is added to a list of up to 4 entries using XOR-distance sorting.</p>
+
+<h4>How "closest" is computed &mdash; pure XOR on public keys only</h4>
+<p>The function <code>id_closest()</code> (DHT.c:218):</p>
+<pre><code>int id_closest(const uint8_t *pk, const uint8_t *pk1, const uint8_t *pk2) {
+    for (size_t i = 0; i &lt; 32; ++i) {
+        uint8_t distance1 = pk[i] ^ pk1[i];
+        uint8_t distance2 = pk[i] ^ pk2[i];
+        if (distance1 &lt; distance2) return 1;  // pk1 is closer
+        if (distance1 &gt; distance2) return 2;  // pk2 is closer
+    }
+    return 0;  // equal
+}</code></pre>
+<p><strong>Byte-by-byte XOR</strong> from index 0 (MSB) to index 31 (LSB). The first byte where the XOR differs determines which node is closer &mdash; equivalent to comparing 256-bit XOR distances as big-endian integers, short-circuited at the first differing byte.</p>
+<p><strong>IP addresses are NOT used in the distance calculation.</strong> Only the public key matters.</p>
+
+<h4>What is actually returned &mdash; <code>Node_format</code> (key + IP together)</h4>
+<p>Each entry in the response is a <code>Node_format</code>:</p>
+<pre><code>typedef struct Node_format {
+    uint8_t  public_key[32];   // The node's DHT public key
+    IP_Port  ip_port;          // IP:port where R1 last successfully pinged this node
+} Node_format;</code></pre>
+<p>The <code>ip_port</code> is the <strong>node's own listening address</strong> as last verified by R1 &mdash; NOT a "friend's return address".</p>
+
+<p>Concrete wire format for up to 4 nodes:</p>
+<pre><code>[0x04]                    -- packet type
+[sender_pubkey 32 bytes]  -- R1's public key
+[nonce 24 bytes]
+[encrypted:
+  [num_nodes 1 byte]      -- 0 to 4
+  [node 1:
+    [family 1 byte]       -- 2=IPv4, 10=IPv6
+    [IP 4 or 16 bytes]
+    [port 2 bytes]
+    [public_key 32 bytes]
+  ]
+  [node 2 ... up to 4]
+  [sendback_data 8 bytes] -- echoes the ping_id from the request
+]</code></pre>
+
+<p><strong>Example</strong>: A asks for nodes close to A's key. R1 has:</p>
+<table>
+  <tr><th>Node</th><th>XOR distance to A's key</th><th>IP:port (where R1 sees them)</th></tr>
+  <tr><td>NodeX</td><td><code>0x00&hellip;05</code></td><td>203.0.113.1:33445</td></tr>
+  <tr><td>NodeY</td><td><code>0x00&hellip;42</code></td><td>198.51.100.9:22845</td></tr>
+  <tr><td>NodeZ</td><td><code>0x01&hellip;00</code></td><td>192.0.2.77:33445</td></tr>
+</table>
+<p>R1 returns: <code>[NodeX(pubkey, 203.0.113.1:33445), NodeY(pubkey, 198.51.100.9:22845)]</code></p>
+
+<h4>How A processes the response</h4>
+<p><code>handle_nodes_response()</code> (DHT.c:1484):</p>
+<pre><code>// 1. Decrypt, verify ping_id matches what we sent
+// 2. Unpack the nodes
+// 3. Add the responder (R1) to our lists
+addto_lists(dht, source, packet+1);
+// 4. For each returned node, queue for pinging
+for (i = 0; i &lt; num_nodes; i++)
+    ping_node_from_nodes_response_ok(dht, ...);</code></pre>
+<p><code>addto_lists()</code> inserts R1 into A's <code>close_clientlist</code>. The returned nodes go through <code>ping_add()</code> into the <code>to_ping</code> buffer. Every 2 seconds, <code>ping_iterate()</code> sends actual ping requests to each.</p>
+<p>A then sends nodes-requests to those newly discovered nodes, repeating the process. Within seconds, A's routing table is populated.</p>
+
+<p><strong>Key</strong>: Under Tor, all these packets travel through TCP relay chains, not as raw UDP datagrams.</p>
+
+<h3>Step 3: Adding a friend</h3>
+<p>A calls <code>dht_addfriend(dht, B_pubkey, ip_callback, ...)</code>.</p>
+<p>This creates a <code>DHT_Friend</code> entry in A's <code>friends_list[]</code>:</p>
+<pre><code>struct DHT_Friend {
+    uint8_t     public_key[32];          // B's DHT public key
+    Client_data client_list[8];          // 8 slots, initially empty
+    uint64_t    last_nodes_request;      // 0 → will send immediately
+    uint32_t    bootstrap_times;         // 0
+    NAT         nat;                     // hole punching state (unused under Tor)
+};</code></pre>
+
+<h3>Step 4: Iterative lookup for B</h3>
+<p>A's <code>do_dht_friends()</code> runs every <code>do_dht()</code> tick:</p>
+<pre><code>static void do_dht_friends(DHT *dht) {
+    for (size_t i = 0; i &lt; dht-&gt;num_friends; ++i) {
+        // Send any queued bootstrap nodes
+        for (size_t j = 0; j &lt; dht_friend-&gt;num_to_bootstrap; ++j)
+            dht_send_nodes_request(dht, &amp;to_bootstrap[j], friend_pk);
+
+        // Main loop: ping + nodes-request
+        do_ping_and_sendnode_requests(dht, &amp;last_nodes_request,
+            friend_pk, client_list, MAX_FRIEND_CLIENTS,
+            &amp;bootstrap_times, true);
+    }
+}</code></pre>
+
+<p><strong>Every 60s</strong> (<code>PING_INTERVAL</code>): For every node in B's <code>client_list[8]</code> that hasn't hit <code>KILL_NODE_TIMEOUT</code> (182s), send a nodes-request (doubles as keepalive).</p>
+<p><strong>Every 20s</strong> (<code>NODES_REQUEST_INTERVAL</code>): Pick a random good node from B's list and send a nodes-request to discover closer nodes.</p>
+<p>Each response returns up to 4 nodes. <code>addto_lists()</code> inserts them into <code>close_clientlist</code> and B's <code>client_list[8]</code>. The <code>replace_all()</code> function keeps the list sorted by XOR distance to B's key.</p>
+
+<h3>Step 5: <code>ret_ip_port</code> &mdash; how A learns B's alleged IP</h3>
+<p>Every node in B's <code>client_list[8]</code> stores an <code>IPPTsPng</code> structure. The field <code>ret_ip_port</code> contains the IP that the node claims B has.</p>
+<p>When A pings a node N in B's client list, N responds. A's <code>handle_ping_response()</code> calls <code>addto_lists()</code>, which triggers <code>update_client_data()</code>:</p>
+<pre><code>assoc-&gt;ret_ip_port = received_ip_port;  // "N says B is at this IP"
+assoc-&gt;ret_timestamp = now;</code></pre>
+<p><code>friend_iplist()</code> collects all non-timed-out <code>ret_ip_port</code> values. If at least 4 of 8 nodes agree on an IP, that IP is considered B's current address.</p>
+<p>When B's own public key appears in its own <code>client_list[8]</code>, the <code>ip_callback</code> fires:</p>
+<pre><code>if (pk_equal(public_key, dht_friend-&gt;public_key)) {
+    callback(data, number, &amp;ip_port);  // "Found B at X:Y!"
+}</code></pre>
+
+<h3>Step 6: Why direct DHT doesn't work under Tor</h3>
+<p>Under clearnet, <code>route_to_friend()</code> would now send UDP packets to those IPs. Under Tor, UDP is blocked. c-toxcore falls back to the <strong>onion routing layer</strong>.</p>
+
+<h3>Step 7: Onion path construction</h3>
+<p>A builds <strong>3-hop onion paths</strong> through known DHT nodes:</p>
+<pre><code>int create_onion_path(Onion *onion, Onion_Path *path, ...) {
+    Node_format nodes[ONION_PATH_LENGTH];  // 3 nodes
+    randfriends_nodes(dht, nodes, ...);     // from fake friends (privacy!)
+    for (i = 0; i &lt; ONION_PATH_LENGTH; i++) {
+        random_keypair(...);
+        encrypt_precompute(...);            // ECDH shared key
+        path-&gt;ip_port[i] = nodes[i].ip_port;
+        path-&gt;node_public_key[i] = nodes[i].public_key;
+    }
+}</code></pre>
+<p>Each path: <code>A → Hop1 → Hop2 → Hop3 → destination</code></p>
+<p>A maintains 6 paths (<code>NUMBER_ONION_PATHS</code>), refreshing every 20 minutes (<code>ONION_PATH_MAX_LIFETIME</code>). Under Tor, these packets are sent via TCP relay connections using <code>tcp_send_onion_request()</code>.</p>
+
+<h3>Step 8: Announce protocol</h3>
+<p>A announces itself to 12 (<code>MAX_ONION_CLIENTS_ANNOUNCE</code>) DHT nodes through 3-hop paths. The announce request contains:</p>
+<pre><code>struct announce_request {
+    uint8_t real_pk[32];           // A's long-term public key
+    uint8_t data_pk[32];           // Data encryption key
+    uint8_t sendback_data[ONION_RETURN_3];  // 3-hop encrypted return path
+};</code></pre>
+<p>The server stores an <code>Onion_Announce_Entry</code> (expires after 300s, refreshed periodically). B does the same.</p>
+
+<h3>Step 9: DHT public key exchange</h3>
+<p>Temporary DHT public keys are exchanged so <code>route_to_friend()</code> can work:</p>
+<p><strong>Via onion</strong> (every 30s): <code>send_onion_data()</code> encrypts the DHT key with B's long-term key, sends through onion paths to B's announce servers, which forward along B's return path.</p>
+<p><strong>Via DHT</strong> (every 20s): <code>route_to_friend()</code> broadcasts to all IPs in B's client list (relayed through TCP connections under Tor).</p>
+
+<h3>Step 10: Data delivery</h3>
+<p><strong>Path 1 &mdash; Onion routing (works under Tor)</strong>:</p>
+<pre><code>A creates message → send_onion_data()
+  → picks a valid announce server of B
+  → sends through 3-hop path
+  → server wraps in NET_PACKET_ONION_DATA_RESPONSE
+  → travels back via B's 3-hop return path
+  → B receives &amp; decrypts</code></pre>
+
+<p><strong>Path 2 &mdash; Direct DHT (works over clearnet UDP)</strong>:</p>
+<pre><code>A calls route_to_friend(B_dht_pk, packet)
+  → friend_iplist() collects ret_ip_port from B's 8 nodes
+  → sends packet to each alleged IP simultaneously
+  → NAT hole punching (punch_holes()) makes it bidirectional</code></pre>
+
+<p>Under clearnet, Path 2 is preferred (lower latency). Under Tor, only Path 1 works.</p>
+
+<h3>Step 11: Lossless crypto connection</h3>
+<pre><code>A sends: NET_PACKET_CRYPTO_HS (cookie + DH public key)
+B responds: NET_PACKET_CRYPTO_HS (cookie + DH public key)
+→ Both derive session keys
+→ A sends NET_PACKET_CRYPTO_DATA (data + ACKs)
+→ Connection established</code></pre>
+<p>This handshake works over either the onion path or the DHT path.</p>
+
+<h3>Complete data flow diagram</h3>
+<pre><code>                       Tor network
+                           |
+        +------------------+------------------+
+        |                                     |
+  [A --SOCKS5--&gt; R1.onion]             [B --SOCKS5--&gt; R2.onion]
+        |                                     |
+   TCP relay connection                  TCP relay connection
+        |                                     |
+   Step 2: nodes-req → R1              Step 2: nodes-req → R2
+           ↓                                      ↓
+   close_clientlist[1024] filled       close_clientlist[1024] filled
+        |                                     |
+   Step 3: dht_addfriend(B_pk)         Step 3: dht_addfriend(A_pk)
+        |                                     |
+   Step 4: periodic nodes-req          Step 4: periodic nodes-req
+   for B's client_list[8]              for A's client_list[8]
+        |                                     |
+   Step 5: ret_ip_port collected       Step 5: ret_ip_port collected
+   from B's 8 client nodes             from A's 8 client nodes
+        |                                     |
+   Step 7: 6 onion paths built         Step 7: 6 onion paths built
+   (TCP relay connections)             (TCP relay connections)
+        |                                     |
+   Step 8: announced to DHT            Step 8: announced to DHT
+   (12 announce servers)               (12 announce servers)
+        |                                     |
+   Step 9: DHT PK exchanged ─── onion data ──→ DHT PK exchanged
+        |                                     |
+   Step 10: messages ─── onion data ────────→ messages</code></pre>
+
+<h3>Summary: DHT's role under Tor</h3>
+<table>
+  <tr><th>Layer</th><th>Role</th><th>Under Tor</th></tr>
+  <tr><td>DHT</td><td>Populates routing tables</td><td>Works over TCP relay connections</td></tr>
+  <tr><td>DHT <code>ret_ip_port</code></td><td>Discovers peer IPs</td><td>Works but IPs not reachable (no UDP)</td></tr>
+  <tr><td>Onion paths</td><td>Built from DHT-discovered nodes</td><td>Works over TCP relay connections</td></tr>
+  <tr><td>Onion announce</td><td>Registers return path on DHT nodes</td><td>Works over TCP relay connections</td></tr>
+  <tr><td>Onion data</td><td>Delivers encrypted payloads</td><td><strong>Only working path</strong> under Tor</td></tr>
+  <tr><td>Net crypto</td><td>Lossless encrypted channel</td><td>Works over onion data delivery</td></tr>
+</table>
+<p>The DHT's fundamental job — <strong>finding nodes that are XOR-close to a target key</strong> — is the same regardless of transport. Under clearnet UDP, the result is direct IP discovery + NAT hole punching. Under Tor, the result is a populated routing table that enables onion path construction.</p>
+
+<h2 id="tor-plan">Implementation Plan: Tor-Only DHT with Onion Addresses</h2>
+
+<p>This section describes the changes needed to make the DHT operate exclusively over Tor, using <code>.onion</code> addresses instead of clearnet IP addresses. All UDP-based transport is replaced with TCP connections through Tor's SOCKS5 proxy. NAT hole punching is removed. The DHT routing table stores onion addresses.</p>
+
+<h3>Why this is needed</h3>
+<p>Currently <code>Node_format</code> carries an <code>IP_Port</code> which holds a clearnet IPv4/IPv6 address:</p>
+<pre><code>typedef struct Node_format {
+    uint8_t  public_key[32];       // Curve25519 DHT key
+    IP_Port  ip_port;              // clearnet IP + port (19 bytes)
+} Node_format;</code></pre>
+<p>Tor onion addresses (v3) are 56 base32 characters, decoded to 35 bytes &mdash; too large for the existing <code>IP</code> union (which only has 16 bytes for <code>IP6</code>). The entire addressing layer needs to be extended.</p>
+
+<h3>Phase 1: Onion address representation</h3>
+
+<h4>1a. New constants in <code>network.h</code></h4>
+<pre><code>#define ONION_V3_ADDRESS_SIZE     35   // decoded .onion v3 address bytes
+#define SIZE_ONION                ONION_V3_ADDRESS_SIZE
+#define PACKED_NODE_SIZE_ONION    (1 + SIZE_ONION + sizeof(uint16_t) + CRYPTO_PUBLIC_KEY_SIZE)
+// = 1 + 35 + 2 + 32 = 70 bytes</code></pre>
+
+<h4>1b. Extend <code>IP</code> to hold onion addresses</h4>
+<p>Current <code>IP</code> is 17 bytes (1 family + 16 ip6). Increase the union:</p>
+<pre><code>typedef union IP_Union {
+    IP4      v4;                      //  4 bytes
+    IP6      v6;                      // 16 bytes
+    uint8_t  onion[ONION_V3_ADDRESS_SIZE];  // 35 bytes
+} IP_Union;
+
+typedef struct IP {
+    Family   family;
+    IP_Union ip;
+} IP;</code></pre>
+<p><code>IP</code> becomes 36 bytes instead of 17. <code>IP_Port</code> becomes 38 bytes instead of 19.</p>
+
+<h4>1c. Family helpers</h4>
+<pre><code>bool net_family_is_onion(Family family);  // already declared
+Family net_family_onion(void);             // already declared</code></pre>
+<p>Wire <code>TOX_AF_ONION</code> into <code>make_family()</code> to resolve to <code>AF_INET</code> (needed for the TCP socket to the SOCKS5 proxy).</p>
+
+<h4>1d. Address helper functions</h4>
+<pre><code>bool onion_addr_from_string(const char *host, uint8_t *addr);
+const char *onion_addr_to_string(const uint8_t *addr, char *buf, size_t bufsz);
+void ip_set_onion(IP *ip, const uint8_t *addr);
+bool ip_get_onion(const IP *ip, uint8_t *addr);</code></pre>
+
+<h4>1e. Update address validation functions</h4>
+<pre><code>bool ip_isset(const IP *ip);
+void ip_reset(IP *ip);
+bool ipport_equal(IP_Port *a, *b);
+bool ipport_isset(const IP_Port *ipport);</code></pre>
+
+<h3>Phase 2: Wire protocol &mdash; pack/unpack onion addresses</h3>
+
+<h4>2a. <code>bin_pack_ip_port()</code> in <code>network.c</code></h4>
+<pre><code>if (net_family_is_onion(ip_port-&gt;ip.family)) {
+    return bin_pack_u08_b(bp, TOX_AF_ONION)
+           &amp;&amp; bin_pack_bin_b(bp, ip_port-&gt;ip.ip.onion, SIZE_ONION)
+           &amp;&amp; bin_pack_u16_b(bp, net_ntohs(ip_port-&gt;port));
+}</code></pre>
+
+<h4>2b. <code>unpack_ip_port()</code> in <code>network.c</code></h4>
+<pre><code>if (data[0] == TOX_AF_ONION) {
+    const uint32_t size = 1 + SIZE_ONION + sizeof(uint16_t);  // 38 bytes
+    if (size &gt; length) return -1;
+    ipport_reset(ip_port);
+    ip_port-&gt;ip.family = net_family_onion();
+    memcpy(ip_port-&gt;ip.ip.onion, data + 1, SIZE_ONION);
+    memcpy(&amp;ip_port-&gt;port, data + 1 + SIZE_ONION, sizeof(uint16_t));
+    return size;
+}</code></pre>
+
+<h4>2c. <code>packed_node_size()</code> in <code>DHT.h</code></h4>
+<pre><code>int packed_node_size(Family ip_family) {
+    if (net_family_is_onion(ip_family)) return PACKED_NODE_SIZE_ONION;
+    // ...existing ipv4/ipv6/tcp cases...
+}</code></pre>
+
+<h3>Phase 3: Tor transport layer (new module)</h3>
+<p>Create <code>toxcore/tor_transport.h</code> and <code>toxcore/tor_transport.c</code>. This replaces <code>Networking_Core</code> (UDP socket) as the DHT's I/O backend.</p>
+
+<h4>3a. Core structure</h4>
+<pre><code>typedef struct Tor_Transport Tor_Transport;
+
+typedef struct Tor_Transport_Config {
+    char     proxy_host[256];
+    uint16_t proxy_port;
+    uint8_t  self_public_key[32];
+} Tor_Transport_Config;
+
+Tor_Transport *tor_transport_new(const Logger *log, const Memory *mem,
+                                  const Mono_Time *mono_time, const Random *rng,
+                                  Tor_Transport_Config *cfg);
+void tor_transport_kill(Tor_Transport *tran);</code></pre>
+
+<h4>3b. Connection management</h4>
+<pre><code>typedef struct Tor_Node_Connection {
+    uint8_t  onion_addr[ONION_V3_ADDRESS_SIZE];
+    uint16_t port;
+    uint8_t  public_key[32];
+    Socket   sock;
+    uint64_t last_active;
+    uint8_t  recv_buf[4096];
+    uint16_t recv_len;
+    uint8_t  send_buf[4096];
+    uint16_t send_len;
+} Tor_Node_Connection;
+
+#define MAX_TOR_CONNECTIONS 128
+
+struct Tor_Transport {
+    Tor_Transport_Config  config;
+    Tor_Node_Connection   connections[MAX_TOR_CONNECTIONS];
+    uint32_t              num_connections;
+    tor_packet_handler_cb handlers[256];
+    void                 *handler_objects[256];
+};</code></pre>
+
+<h4>3c. SOCKS5 connect flow</h4>
+<pre><code>1. Create TCP socket (AF_INET, SOCK_STREAM)
+2. Connect to proxy_host:proxy_port (Tor SOCKS5 proxy)
+3. SOCKS5 handshake:
+   - Send: [0x05][0x01][0x00]              (no auth)
+   - Recv: [0x05][0x00]                     (auth accepted)
+   - Send: [0x05][0x01][0x03][len][host][port]  (connect to .onion)
+   - Recv: [0x05][0x00][0x00][0x01|0x03]...    (connected)
+4. Wrap DHT packets with length-prefixed framing</code></pre>
+
+<h4>3d. Message framing</h4>
+<pre><code>// Wire format for each DHT packet over TCP:
+// [uint16_t length][packet bytes(length)]
+// length includes the 2-byte prefix itself</code></pre>
+
+<h4>3e. Send/receive API</h4>
+<pre><code>int tor_transport_send(Tor_Transport *tran,
+                       const uint8_t *onion_addr, uint16_t port,
+                       const uint8_t *data, uint16_t length);
+
+typedef void (*tor_packet_handler_cb)(void *object,
+                                       const uint8_t *source_pubkey,
+                                       const uint8_t *packet, uint16_t length,
+                                       void *userdata);
+
+void tor_transport_register_handler(Tor_Transport *tran, uint8_t type,
+                                     tor_packet_handler_cb cb,
+                                     void *object, void *userdata);
+
+void tor_transport_iterate(Tor_Transport *tran);</code></pre>
+
+<h4>3f. Connection reuse</h4>
+<pre><code>#define TOR_CONNECTION_REUSE_TIMEOUT 30
+#define TOR_CONNECTION_IDLE_TIMEOUT  300
+
+// On send: look up (onion_addr, port) in pool; reuse or open new SOCKS5 conn</code></pre>
+
+<h3>Phase 4: DHT adaptation</h3>
+
+<h4>4a. Replace <code>Networking_Core *net</code> with <code>Tor_Transport *tran</code></h4>
+<pre><code>struct DHT {
+    Tor_Transport *tran;  // replaces Networking_Core *net
+    // ...
+};</code></pre>
+
+<h4>4b. Replace all <code>sendpacket()</code> calls</h4>
+<pre><code>// Before:
+sendpacket(dht-&gt;net, &amp;assoc-&gt;ip_port, packet, length);
+// After:
+uint8_t onion_addr[ONION_V3_ADDRESS_SIZE];
+ip_get_onion(&amp;assoc-&gt;ip_port.ip, onion_addr);
+tor_transport_send(dht-&gt;tran, onion_addr, assoc-&gt;ip_port.port, packet, length);</code></pre>
+
+<h4>4c. Simplify <code>Client_data</code></h4>
+<pre><code>typedef struct Client_data {
+    uint8_t  public_key[CRYPTO_PUBLIC_KEY_SIZE];
+    IP_Port  ip_port;               // onion address + port
+    uint64_t timestamp;
+    uint64_t last_pinged;
+    bool     announce_node;
+} Client_data;</code></pre>
+<p>Remove <code>IPPTsPng</code> &mdash; no dual-stack, no <code>ret_ip_port</code>.</p>
+
+<h4>4d. Remove <code>ret_ip_port</code> logic</h4>
+<ul>
+  <li>Delete <code>IPPTsPng</code> struct</li>
+  <li>Delete <code>friend_iplist()</code></li>
+  <li>Delete <code>returnedip_ports()</code> call in nodes-response handler</li>
+  <li>Delete <code>ipport_self_copy()</code></li>
+</ul>
+
+<h4>4e. Remove NAT hole punching</h4>
+<ul>
+  <li>Delete <code>NAT</code> struct</li>
+  <li>Delete <code>send_nat_ping()</code>, <code>handle_nat_ping()</code>, <code>punch_holes()</code>, <code>do_nat()</code></li>
+  <li>Remove <code>hole_punching_enabled</code> and <code>lan_discovery_enabled</code> from <code>new_dht()</code> signature</li>
+</ul>
+
+<h4>4f. Update <code>do_dht()</code></h4>
+<pre><code>void do_dht(DHT *dht) {
+    tor_transport_iterate(dht-&gt;tran);  // new
+    do_close(dht);
+    do_dht_friends(dht);
+    // do_nat(dht);  ← REMOVED
+}</code></pre>
+
+<h3>Phase 5: Bootstrap changes</h3>
+
+<h4>5a. Bootstrap node format</h4>
+<pre><code>// other/DHTnodes changes from:
+// ip=203.0.113.1 port=33445 key=...
+// to:
+// onion=z6p3h4x...d.onion port=33445 key=...</code></pre>
+
+<h4>5b. <code>dht_bootstrap_from_address()</code></h4>
+<pre><code>bool dht_bootstrap_from_address(DHT *dht, const char *address, ...) {
+    if (net_is_onion(address)) {
+        uint8_t onion_addr[ONION_V3_ADDRESS_SIZE];
+        onion_addr_from_string(address, onion_addr);
+        // Connect through Tor transport directly
+        tor_transport_send(dht-&gt;tran, onion_addr, port, nodes_req, len);
+        return true;
+    }
+    // clearnet path removed
+}</code></pre>
+
+<h3>Phase 6: Clearnet code removal</h3>
+
+<table>
+  <tr><th>Module</th><th>What</th><th>Reason</th></tr>
+  <tr><td><code>Networking_Core</code></td><td>UDP socket, <code>SOCK_DGRAM</code></td><td>No UDP</td></tr>
+  <tr><td><code>DHT.c</code></td><td><code>NAT</code>, <code>IPPTsPng.ret_ip_port</code>, <code>do_nat()</code>, <code>friend_iplist()</code></td><td>No NAT traversal</td></tr>
+  <tr><td><code>LAN_discovery.h/c</code></td><td>UDP broadcast discovery</td><td>No LAN, no UDP</td></tr>
+  <tr><td><code>network.h</code></td><td><code>IP4</code>/<code>IP6</code> unions</td><td>Only onion needed</td></tr>
+  <tr><td><code>DHT.h</code></td><td><code>hole_punching_enabled</code>, <code>lan_discovery_enabled</code></td><td>Removed from constructor</td></tr>
+</table>
+
+<h3>Phase 7: Implementation order (10 steps)</h3>
+
+<ol>
+  <li><strong>Extend <code>IP</code> union</strong> &mdash; add <code>onion[35]</code> to <code>IP_Union</code>. Update all struct sizes. Full rebuild needed.</li>
+  <li><strong>Wire onion address family</strong> &mdash; <code>make_family()</code>, <code>bin_pack_ip_port()</code>, <code>unpack_ip_port()</code>, <code>ip_isset()</code>, <code>ipport_equal()</code>.</li>
+  <li><strong>Address conversion helpers</strong> &mdash; <code>onion_addr_from_string()</code>, <code>onion_addr_to_string()</code>, <code>ip_set_onion()</code>, <code>ip_get_onion()</code>.</li>
+  <li><strong>Create <code>tor_transport</code> module</strong> &mdash; <code>tor_transport.h/c</code>: SOCKS5 connections, pool, framing, send/recv API.</li>
+  <li><strong>Simplify <code>Client_data</code></strong> &mdash; single assoc; remove <code>IPPTsPng</code>.</li>
+  <li><strong>Remove <code>ret_ip_port</code> and <code>NAT</code></strong> &mdash; delete NAT functions, <code>friend_iplist()</code>, <code>ipport_self_copy()</code>.</li>
+  <li><strong>Adapt DHT to use <code>Tor_Transport</code></strong> &mdash; replace <code>net</code> with <code>tran</code>; all <code>sendpacket()</code> → <code>tor_transport_send()</code>.</li>
+  <li><strong>Update ping subsystem</strong> &mdash; <code>ping.c</code> send/recv via <code>Tor_Transport</code>.</li>
+  <li><strong>Update bootstrap</strong> &mdash; detect <code>.onion</code>, use Tor transport; update <code>other/DHTnodes</code>.</li>
+  <li><strong>Remove clearnet dependencies</strong> &mdash; strip UDP, <code>LAN_discovery</code>, <code>IP4</code>/<code>IP6</code>; clean up <code>new_dht()</code> signature.</li>
+</ol>
+
+<h3>Summary of file changes</h3>
+
+<table>
+  <tr><th>File</th><th>Change</th></tr>
+  <tr><td><code>toxcore/network.h</code></td><td>Extend <code>IP_Union</code> with <code>onion[35]</code>; new constants; new helper declarations</td></tr>
+  <tr><td><code>toxcore/network.c</code></td><td>Wire onion in pack/unpack/display; implement helpers; remove UDP functions</td></tr>
+  <tr><td><code>toxcore/tor_transport.h</code></td><td><strong>New</strong> &mdash; <code>Tor_Transport</code> API, SOCKS5 config, handler registration</td></tr>
+  <tr><td><code>toxcore/tor_transport.c</code></td><td><strong>New</strong> &mdash; SOCKS5 connections, TCP framing, connection pool, iterate loop</td></tr>
+  <tr><td><code>toxcore/DHT.h</code></td><td><code>Client_data</code> &rarr; single assoc; remove <code>IPPTsPng</code>, <code>NAT</code>; update <code>new_dht()</code></td></tr>
+  <tr><td><code>toxcore/DHT.c</code></td><td>Replace <code>sendpacket()</code> &rarr; <code>tor_transport_send()</code>; remove NAT, <code>ret_ip_port</code>, LAN; update bootstrap</td></tr>
+  <tr><td><code>toxcore/ping.h</code> / <code>ping.c</code></td><td>Update send/recv to use <code>Tor_Transport</code></td></tr>
+  <tr><td><code>toxcore/LAN_discovery.h</code> / <code>LAN_discovery.c</code></td><td>Remove from build</td></tr>
+  <tr><td><code>toxcore/onion_client.c</code></td><td>Works over Tor transport automatically</td></tr>
+  <tr><td><code>toxcore/Messenger.h</code> / <code>Messenger.c</code></td><td>Update <code>new_dht()</code> calls</td></tr>
+  <tr><td><code>other/DHTnodes</code></td><td>Replace IPs with .onion addresses</td></tr>
+</table>
+
+<h3>Key design decisions</h3>
+
+<ol>
+  <li><strong>Extend <code>IP</code> instead of separate <code>Onion_Addr</code></strong> &mdash; because <code>IP_Port</code> is used everywhere. One change propagates through all existing code paths.</li>
+  <li><strong>Connection pool instead of one connection per packet</strong> &mdash; Tor circuit creation is expensive (~1-2s). Reusing connections to close list neighbors reduces latency.</li>
+  <li><strong>Not reusing <code>TCP_Client_Connection</code></strong> &mdash; The TCP relay protocol is designed for routing connections to other peers. For direct DHT node-to-node communication, simple length-prefixed framing is sufficient and avoids relay protocol overhead.</li>
+  <li><strong>Remove <code>ret_ip_port</code></strong> &mdash; Under Tor, the concept of a "public IP" is irrelevant. Tor hidden services provide connectivity regardless of the client's actual IP.</li>
+  <li><strong>Onion routing layer (3-hop) can be simplified</strong> &mdash; Tor already provides multi-hop anonymity. The 3-hop Tox onion path is redundant over Tor but can be kept for incremental adoption.</li>
+</ol>
+
+<h2 id="files">Relevant Files</h2>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>toxcore/DHT.h</code></td><td>DHT header (structures, API)</td></tr>
+  <tr><td><code>toxcore/DHT.c</code></td><td>DHT implementation</td></tr>
+  <tr><td><code>toxcore/ping.h</code> / <code>ping.c</code></td><td>Ping subsystem</td></tr>
+  <tr><td><code>toxcore/ping_array.h</code> / <code>ping_array.c</code></td><td>Ping ID storage</td></tr>
+  <tr><td><code>toxcore/crypto_core.h</code></td><td>Crypto constants</td></tr>
+  <tr><td><code>toxcore/network.h</code></td><td>Packet types, IP_Port</td></tr>
+  <tr><td><code>toxcore/shared_key_cache.h</code> / <code>shared_key_cache.c</code></td><td>ECDH cache</td></tr>
+  <tr><td><code>toxcore/onion.h</code> / <code>onion.c</code></td><td>Onion routing</td></tr>
+  <tr><td><code>toxcore/onion_announce.h</code> / <code>onion_announce.c</code></td><td>Announce protocol</td></tr>
+  <tr><td><code>toxcore/onion_client.h</code> / <code>onion_client.c</code></td><td>Onion client</td></tr>
+  <tr><td><code>toxcore/TCP_connection.h</code> / <code>TCP_connection.c</code></td><td>TCP relay connection</td></tr>
+  <tr><td><code>toxcore/LAN_discovery.h</code> / <code>LAN_discovery.c</code></td><td>LAN discovery</td></tr>
+  <tr><td><code>docs/updates/DHT.md</code></td><td>Original protocol spec</td></tr>
+  <tr><td><code>other/DHTnodes</code></td><td>Bootstrap node list</td></tr>
+</table>
+
+</body>
+</html>

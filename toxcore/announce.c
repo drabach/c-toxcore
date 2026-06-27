@@ -12,7 +12,6 @@
 #include <string.h>
 
 #include "DHT.h"
-#include "LAN_discovery.h"
 #include "attributes.h"
 #include "ccompat.h"
 #include "crypto_core.h"
@@ -62,7 +61,7 @@ struct Announcements {
     Forwarding *forwarding;
     const Mono_Time *mono_time;
     DHT *dht;
-    Networking_Core *net;
+    Tor_Transport *tran;
     const uint8_t *public_key;
     const uint8_t *secret_key;
 
@@ -340,8 +339,7 @@ static int create_reply_plain_data_search_request(Announcements *_Nonnull announ
     ++p;
 
     Node_format nodes_list[MAX_SENT_NODES];
-    const int num_nodes = get_close_nodes(announce->dht, data_public_key, nodes_list,
-                                          net_family_unspec(), ip_is_lan(&source->ip), true);
+    const int num_nodes = get_close_nodes(announce->dht, data_public_key, nodes_list, true);
 
     if (num_nodes < 0 || num_nodes > MAX_SENT_NODES) {
         return -1;
@@ -593,10 +591,10 @@ static void forwarded_request_callback(void *_Nonnull object, const IP_Port *_No
         return;
     }
 
-    forward_reply(announce->net, forwarder, sendback, sendback_length, reply, len);
+    forward_reply(announce->tran, forwarder, sendback, sendback_length, reply, len);
 }
 
-static int handle_dht_announce_request(
+static void handle_dht_announce_request(
     void *_Nonnull object, const IP_Port *_Nonnull source, const uint8_t *_Nonnull packet, uint16_t length, void *_Nullable userdata)
 {
     Announcements *announce = (Announcements *)object;
@@ -605,11 +603,9 @@ static int handle_dht_announce_request(
     const int len
         = create_reply(announce, source, nullptr, 0, packet, length, reply, sizeof(reply));
 
-    if (len == -1) {
-        return -1;
+    if (len != -1) {
+        tor_transport_send(announce->tran, source->ip.ip.onion, source->port, nullptr, reply, len);
     }
-
-    return sendpacket(announce->net, source, reply, len) == len ? 0 : -1;
 }
 
 Announcements *new_announcements(const Logger *log, const Memory *mem, const Random *rng, const Mono_Time *mono_time,
@@ -631,7 +627,7 @@ Announcements *new_announcements(const Logger *log, const Memory *mem, const Ran
     announce->forwarding = forwarding;
     announce->mono_time = mono_time;
     announce->dht = forwarding_get_dht(forwarding);
-    announce->net = dht_get_net(announce->dht);
+    announce->tran = dht_get_transport(announce->dht);
     announce->public_key = dht_get_self_public_key(announce->dht);
     announce->secret_key = dht_get_self_secret_key(announce->dht);
     new_hmac_key(announce->rng, announce->hmac_key);
@@ -645,9 +641,9 @@ Announcements *new_announcements(const Logger *log, const Memory *mem, const Ran
 
     set_callback_forwarded_request(forwarding, forwarded_request_callback, announce);
 
-    networking_registerhandler(announce->net, NET_PACKET_DATA_SEARCH_REQUEST, handle_dht_announce_request, announce);
-    networking_registerhandler(announce->net, NET_PACKET_DATA_RETRIEVE_REQUEST, handle_dht_announce_request, announce);
-    networking_registerhandler(announce->net, NET_PACKET_STORE_ANNOUNCE_REQUEST, handle_dht_announce_request, announce);
+    tor_transport_register_handler(announce->tran, NET_PACKET_DATA_SEARCH_REQUEST, handle_dht_announce_request, announce);
+    tor_transport_register_handler(announce->tran, NET_PACKET_DATA_RETRIEVE_REQUEST, handle_dht_announce_request, announce);
+    tor_transport_register_handler(announce->tran, NET_PACKET_STORE_ANNOUNCE_REQUEST, handle_dht_announce_request, announce);
 
     return announce;
 }
@@ -660,9 +656,9 @@ void kill_announcements(Announcements *announce)
 
     set_callback_forwarded_request(announce->forwarding, nullptr, nullptr);
 
-    networking_registerhandler(announce->net, NET_PACKET_DATA_SEARCH_REQUEST, nullptr, nullptr);
-    networking_registerhandler(announce->net, NET_PACKET_DATA_RETRIEVE_REQUEST, nullptr, nullptr);
-    networking_registerhandler(announce->net, NET_PACKET_STORE_ANNOUNCE_REQUEST, nullptr, nullptr);
+    tor_transport_register_handler(announce->tran, NET_PACKET_DATA_SEARCH_REQUEST, nullptr, nullptr);
+    tor_transport_register_handler(announce->tran, NET_PACKET_DATA_RETRIEVE_REQUEST, nullptr, nullptr);
+    tor_transport_register_handler(announce->tran, NET_PACKET_STORE_ANNOUNCE_REQUEST, nullptr, nullptr);
 
     crypto_memzero(announce->hmac_key, CRYPTO_HMAC_KEY_SIZE);
     shared_key_cache_free(announce->shared_keys);
